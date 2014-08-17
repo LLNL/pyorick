@@ -52,7 +52,7 @@ import termios
 _yorick_command = "yorick"
 _pyorick_dot_i = "pyorick.i"
 _yorick_command = "/home/dave/gh/yorick/relocate/bin/yorick"
-_pyorick_dot_i = "/home/dave/gh/PYorick/pyorick.i"
+_pyorick_dot_i = "/home/dave/gh/pyorick/pyorick.i"
 
 def yorick(args="", debug=None, batch=None, kill=None, mode=None):
   """Return (yo,oy) pair of yorick interface objects.
@@ -76,11 +76,17 @@ def yorick(args="", debug=None, batch=None, kill=None, mode=None):
   # if ever implement connections to remote machines, may want to revisit
   global _pid, _pfd, _rfd, _wfd, _batch, _need_response, _recursing
   global _debug, _mode, _mode_tmp
-  _batch = batch
+  if kill:
+    _yorick_destroy()
+    return None
+
   if batch:
-    mode = 0
+    mode = False
   elif (mode is None):   # set default mode
-    mode = 1
+    mode = True
+  else:
+    mode = bool(mode)
+
   if (_pid is None) and (not kill):
     if batch:
       argv = [_yorick_command, "-batch", _pyorick_dot_i]
@@ -88,16 +94,20 @@ def yorick(args="", debug=None, batch=None, kill=None, mode=None):
       argv = [_yorick_command, "-q", "-i", _pyorick_dot_i]
     _rfd, _wfd, _pfd, _pid = _yorick_create(_yorick_command, argv, args)
     _need_response = _recursing = False
-  elif kill:
-    _yorick_destroy()
-    return None
+    _debug = _mode = _mode_tmp = False
+    _batch = bool(batch)
   rslt = (_YorickInterface(0), _YorickInterface(1))
-  if mode:
-    rslt[0].pyorick(1)  # set yorick to interactive mode
-  if debug:
-    rslt[0]("pydebug = 1")
+
+  if mode != _mode:
     _yorick_flush()
-    _debug = debug
+    _mode_tmp = mode
+    _subcall("pyorick", (int(mode),), {})
+
+  if debug is not None:
+    if bool(debug) != _debug:
+      _debug = bool(debug)
+      _parsex("pydebug = 1" if _debug else "pydebug = 0")
+
   return rslt
 
 class PYorickError(Exception):
@@ -111,9 +121,7 @@ NewAxis = {}  # use this as non-None flag for numpy.newaxis
 # Remainder of module is hidden from users, who interact only with
 # the two instances of _YorickInterface returned by yorick().
 
-_pid = _pfd = _rfd = _wfd = _batch = None
-_debug = False
-_mode = _mode_tmp = 0
+_pid = None  # else used before defined
 
 def _yorick_create(_yorick_command, argv, args):
   ptoy = os.pipe()
@@ -151,9 +159,14 @@ def _yorick_destroy():
       os.waitpid(_pid, 0)   # otherwise yorick becomes a zombie
     finally:
       _pid = _pfd = _rfd = _wfd = _batch = None
-      _need_response = _recursing = _debug = False
+      _debug = _mode = _mode_tmp = False
+      _need_response = _recursing = False
 
-def _yorick_flush():
+_last_prompt = ''
+def _yorick_flush(clear=None):
+  global _last_prompt
+  if clear:
+    _last_prompt = ''
   s = ''
   i = 0    # curiously hard to get response promptly?
   while _pfd is not None and i < 3:
@@ -172,8 +185,10 @@ def _yorick_flush():
       i += 1
   if s:
     # remove prompt in one-shot mode
-    if (_mode or _mode_tmp) and s.endswith("> "):
-      s = s[0:s.rfind('\n')+1]
+    if _mode and s.endswith("> "):
+      i = s.rfind('\n') + 1  # 0 on failure
+      _last_prompt = s[i:]
+      s = s[0:i]
     # remove final newline, since print adds one
     # -- consider python 3 print function
     if s and s[-1]=='\n':
@@ -182,6 +197,12 @@ def _yorick_flush():
         s = s[0:-1]
     if s:
       print(s)
+
+def _wait_for_prompt():
+  _yorick_flush(1)
+  while not _last_prompt:
+    p = select.select([_pfd], [], [_pfd])
+    _yorick_flush()
 
 class _YorickInterface:
   """Main interface to yorick process.
@@ -264,16 +285,10 @@ class _YorickRef:
     flag = "invoke" if self.pipe.__ref else "call"
     return "<yorick variable {0} ({1})>".format(self.name, flag)
   def __call__(self, *args, **kwargs):   # ref(arglist)
-    global _mode, _mode_tmp
     _check_live()
-    setmode = self.name=='pyorick' and len(args) and isinstance(args[0],Number)
-    if setmode:
-      _mode_tmp = 1 if args[0] else 0
     if self.pipe.__ref:
       return _funcall(self.name, args, kwargs)
     _subcall(self.name, args, kwargs)
-    if setmode:
-      _mode = _mode_tmp
   def __setitem__(self, key, value):     # ref[key] = value
     _check_live()
     _setslice(self.name, key, value)
@@ -869,16 +884,20 @@ def _fd_send(x):
 
 _recursing = False
 def _get_response(msg):
-  global _recursing
-  if _debug:
+  global _recursing, _mode
+  if _mode or _debug:
     _yorick_flush()
   if _mode:  # have to send "here it comes" command through stdin
     _py2yor("pyorick;")
     if _debug:
       print("P>_get_response sent pyorick command to stdin")
   _put_msg(msg)
+  _mode = _mode_tmp   # msg caused mode to change
   m = _get_msg()
-  _yorick_flush()   # check if yorick printed anything
+  if _mode:
+    _wait_for_prompt()
+  else:
+    _yorick_flush()
   ident = m['_pyorick_id']
   if ident == _ID_EOL:
     if m['hdr'][1]==2 and msg['_pyorick_id']==_ID_GETVAR and ('yref' in msg):
