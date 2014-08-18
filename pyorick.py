@@ -74,7 +74,7 @@ def yorick(args="", debug=None, batch=None, kill=None, mode=None):
   # only one yorick can be attached at a time
   # this mimics what would happen if yorick were built into python
   # if ever implement connections to remote machines, may want to revisit
-  global _pid, _pfd, _rfd, _wfd, _batch, _need_response, _recursing
+  global _pid, _pfd, _rfd, _wfd, _batch, _need_response
   global _debug, _mode, _mode_tmp
   if kill:
     _yorick_destroy()
@@ -93,7 +93,7 @@ def yorick(args="", debug=None, batch=None, kill=None, mode=None):
     else:
       argv = [_yorick_command, "-q", "-i", _pyorick_dot_i]
     _rfd, _wfd, _pfd, _pid = _yorick_create(_yorick_command, argv, args)
-    _need_response = _recursing = False
+    _need_response = False
     _debug = _mode = _mode_tmp = False
     _batch = bool(batch)
   rslt = (_YorickInterface(0), _YorickInterface(1))
@@ -150,7 +150,7 @@ def _yorick_create(_yorick_command, argv, args):
 
 def _yorick_destroy():
   global _pid, _pfd, _rfd, _wfd
-  global _batch, _need_response, _recursing, _debug
+  global _batch, _need_response, _debug
   if _pid is not None:
     try:
       os.close(_pfd)
@@ -160,7 +160,7 @@ def _yorick_destroy():
     finally:
       _pid = _pfd = _rfd = _wfd = _batch = None
       _debug = _mode = _mode_tmp = False
-      _need_response = _recursing = False
+      _need_response = False
 
 _last_prompt = ''
 def _yorick_flush(clear=None):
@@ -342,14 +342,14 @@ _ID_SETSLICE = 38
 def _array_dtype(x):
   k = x.dtype.kind
   n = x.dtype.itemsize
-  if k=='i' or k=='u':
+  if k=='i' or k=='u' or k=='b':
     if n in _isizes:
       n = _isizes.index(n) if (n!=_isizes[3]) else 3
     else:
       n = -1
     if n == 4:
       n = -1   # longlong unsupported in yorick if bigger than long
-    if k=='u' and n>=0:
+    if k!='i' and n>=0:
       n += 8
     t = _types[n] if n>=0 else None
   elif k=='f':
@@ -801,16 +801,14 @@ def _caller(ident, name, args, kwargs):
   return _get_response(msg)
 
 def _getslice(name, key):
-  if not isinstance(key, tuple):  # unnecessary?
-    print("WTF -- shouldn't be here")
+  if not isinstance(key, tuple):  # single index case
     key = (key,)
   msg = _encode_name(_ID_GETSLICE, name)
   msg['args'] = [_encode(arg) for arg in key]
   return _get_response(msg)
 
 def _setslice(name, key, value):
-  if not isinstance(key, tuple):  # unnecessary?
-    print("WTF -- shouldn't be here")
+  if not isinstance(key, tuple):  # single index case
     key = (key,)
   msg = _encode_name(_ID_SETSLICE, name)
   msg['args'] = [_encode(arg) for arg in key]
@@ -882,9 +880,8 @@ def _fd_send(x):
   if _debug and n:
     print(("P>_fd_send: {0} bytes".format(n)))
 
-_recursing = False
 def _get_response(msg):
-  global _recursing, _mode
+  global _mode
   if _mode or _debug:
     _yorick_flush()
   if _mode:  # have to send "here it comes" command through stdin
@@ -902,27 +899,11 @@ def _get_response(msg):
   if ident == _ID_EOL:
     if m['hdr'][1]==2 and msg['_pyorick_id']==_ID_GETVAR and ('yref' in msg):
       # unrepresentable data gets variable reference
-      _recursing = False
       return _YorickRef(msg['yref'], _bytes2str(msg['name']))
-    if m['hdr'][1] == 1 and not _mode:
-      # retrievable yorick error
-      if _recursing:
-        _recursing = False
-        raise PYorickError("pyorick_clearerr recursion")
-      _recursing = True
-      errmsg = _YorickInterface(1).pyorick_clearerr()
-      _recursing = False
-      if isinstance(errmsg, list):
-        errmsg = '\n'.join(errmsg)
-      errmsg = "yorick reports error:\n" + errmsg
-      raise PYorickError(errmsg)
     else:
-      _recursing = False
-      raise PYorickError("unspecified error response from yorick")
+      raise PYorickError("yorick reports error")
   elif ident < _ID_PARSEX:  # got required passive message
-    _recursing = False
     return _decode(m)
-  _recursing = False
   raise PYorickError("active responses from yorick not yet supported")
 
 def _py2yor(s, nolf=None):
@@ -933,6 +914,6 @@ def _py2yor(s, nolf=None):
   while n < len(s):
     n += os.write(_pfd, s[n:])
 
-if __name__ == "__main__":
-  from pyorick_test import pytest
-  pytest()
+#if __name__ == "__main__":
+#  from pyorick_test import pytest
+#  pytest()

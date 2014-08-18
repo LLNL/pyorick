@@ -23,6 +23,7 @@ if (is_void(_pyorick_rfd)) {
       _pyorick_rfd = long(_pyorick_rfd(1));
       command_line = (numberof(command_line)>2)? command_line(3:) : [];
       _pyorick_mode = 0n;
+      set_idler, , 4;  /* print error with line# before after_error */
     }
   }
 }
@@ -52,10 +53,10 @@ func pyorick(mode)
  *   happens waiting for input from stdin.
  *   On the other hand, if you are running in unattended batch mode,
  *   yorick quits instead of waiting for stdin, so you must use idler mode.
- * SEE ALSO: pyorick_clearerr, pydebug
+ * SEE ALSO: pydebug
  */
 {
-  extern _pyorick_mode;
+  extern _pyorick_mode, after_error;
   if (is_void(mode)) {
     local __, ___;
     if (_pyorick_wait() && _pyorick_sending && !is_void(___)) {
@@ -70,7 +71,8 @@ func pyorick(mode)
     }
   } else {
     _pyorick_mode = (mode != 0);
-    if (!_pyorick_mode) set_idler, _pyorick_idler, 1;
+    if (!_pyorick_mode) set_idler, _pyorick_idler, 4;
+    after_error = _pyorick_err_handler;
   }
 }
 
@@ -94,22 +96,9 @@ local pydebug;
  * py, "array:", index1, index2, ..., value      set array slice
  *   note: index order and meaning as interpreted by python
  */
-
 func py(command, ..)
 {
   error, "not yet implemented -- only responds to python requests for now";
-}
-
-/* python can call this to get error message after EOL with error flag */
-func pyorick_clearerr(void)
-/* DOCUMENT pyorick_clearerr()
- *   Returns error message from previous pyorick error in idler mode.
- *   (In one-shot mode, errors print as for an interactive session.)
- */
-{
-  msg = _pyorick_errmsg;
-  _pyorick_errmsg = [];
-  return msg;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -159,10 +148,8 @@ func _pyorick_recv(x) { return fd_read(_pyorick_rfd, x); }
 func _pyorick_send(x) { return fd_write(_pyorick_wfd, x); }
 
 /* _pyorick_err_handler
- *    Installed as after_error function by _pyorick_idler.  Simply makes
- *    error message available for python side to call pyorick_clearerr()
- *    to retrieve it, then reinstalls _pyorick_idler.  Also responds
- *    to python with error-EOL message if response required.
+ *    Installed as after_error function by _pyorick_idler and pyorick,mode.
+ *    Reinstalls _pyorick_idler in idler mode.  Always calls dbexit.
  * _pyorick_idler
  *    Perpetual loop: Read a complete message from python, perform the
  *    requested action, and write the response message to python.
@@ -216,22 +203,23 @@ func _pyorick_err_handler
     _pyorick_panic, "caught in exception loop\n" +
       (_pyorick_errmsg? _pyorick_errmsg : "");
   if (_pyorick_looping < 2) _pyorick_errmsg = catch_message;
-  if (pydebug) write, "Y>_pyorick_err_handler: "+sum(_pyorick_errmsg);
-  if (!_pyorick_mode) set_idler, _pyorick_idler, 1;
+  if (!_pyorick_mode) set_idler, _pyorick_idler, 4;
   _pyorick_puterr;  /* noop unless _pyorick_sending */
+  dbexit, 0;        /* get out of debug mode from set_idler,,4 */
 }
 
+_pyorick_looping = 0;
 func _pyorick_idler
 {
-  if (pydebug) write, "Y>_pyorick_idler: enter";
-  _pyorick_looping += 1;
+  extern after_error;
   after_error = _pyorick_err_handler;
+  _pyorick_looping += 1;
+  if (pydebug) write, "Y>_pyorick_idler: enter";
   for (__=___=[] ; !_pyorick_mode ; __=___=[]) pyorick;
   if (pydebug) write, "Y>_pyorick_idler: exit";
-  if (_pyorick_mode || _pyorick_looping>=100) set_idler, , 0;
+  if (_pyorick_mode || _pyorick_looping>=100) set_idler, , 4;
   else if (!is_void(_pyorick_rfd)) set_idler, _pyorick_idler;
 }
-_pyorick_looping = 0;
 
 func _pyorick_wait(void)
 {
