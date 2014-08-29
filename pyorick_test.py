@@ -1,20 +1,21 @@
-import six
+# attempt to make it work for both python 2.6+ and python 3.0+
+from __future__ import (absolute_import, division,
+                        print_function, unicode_literals)
+from future.builtins import *
 
 import numpy as np
-from numbers import Number
-from pyorick import yorick, NewAxis, PYorickError
+from pyorick import *
 
-def pytest(test=0):
+def pytest(test=None, ypath="yorick", ipath="pyorick.i"):
   """Test and example suite for pyorick."""
 
   # Create handles for yorick connection, starting yorick if necessary.
   # Deleting the handles does not close the connection (see kill=1 below),
   # calling yorick() again gives you an equivalent handle pair, referring
   # to the existing connection if yorick is already running.
+  yo, oy = yorick(ypath=ypath, ipath=ipath)
   if test:
-    yo, oy = yorick(debug=1)
-  else:
-    yo, oy = yorick()
+    yo._yorick.setdebug(1)
 
   svals = [65, 6.5, 0.+6.5j, bytearray(b'B'), np.array(65, dtype=np.short),
            np.array(65, dtype=np.intc), np.array(6.5, dtype=np.single),
@@ -113,5 +114,3 @@ func test(a, b=) {
     if not np.array_equal(y, [[65, 1], [65, 3], [6, 5]]):
       raise PYorickError("setslice/getslice failed")
     print("9: PASSED getslice/setslice tests")
-
-  yorick(kill=1)

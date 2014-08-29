@@ -115,13 +115,15 @@ _ID_NIL = 18;
 _ID_GROUP = 19;
 _ID_EOL = 20;
 /* active messages (passive response required): */
-_ID_PARSEX = 32;
-_ID_GETVAR = 33;
-_ID_SETVAR = 34;
-_ID_FUNCALL = 35;
-_ID_SUBCALL = 36;
-_ID_GETSLICE = 37;
-_ID_SETSLICE = 38;
+_ID_EVAL = 32;
+_ID_EXEC = 33;
+_ID_GETVAR = 34;
+_ID_SETVAR = 35;
+_ID_FUNCALL = 36;
+_ID_SUBCALL = 37;
+_ID_GETSLICE = 38;
+_ID_SETSLICE = 39;
+_ID_GETSHAPE = 40;
 
 /* garbled messages are fatal, shut down the pipes and exit idler loop */
 func _pyorick_panic(msg)
@@ -293,13 +295,11 @@ func _pyorick_get(void)
   } else if (id == _ID_EOL) {
     save, msg, flag = hdr(2);
 
-  } else if (id == _ID_PARSEX) {
+  } else if (anyof(id == [_ID_EVAL, _ID_EXEC])) {
     save, msg, value = _pyorick_getname(hdr(2));
-  } else if (id == _ID_GETVAR) {
+  } else if (anyof(id == [_ID_GETVAR, _ID_SETVAR, _ID_GETSHAPE])) {
     save, msg, name = _pyorick_getname(hdr(2));
-  } else if (id == _ID_SETVAR) {
-    save, msg, name = _pyorick_getname(hdr(2));
-    save, msg, value = _pyorick_get();
+    if (id == _ID_SETVAR) save, msg, value = _pyorick_get();
   } else if (id>=_ID_FUNCALL && id<=_ID_SETSLICE) {
     save, msg, name = _pyorick_getname(hdr(2));
     save, msg, args = _pyorick_getlist();
@@ -342,7 +342,7 @@ func _pyorick_getlist(void)
 func _pyorick_action(msg)
 {
   id = msg(_pyorick_id);
-  if (id < _ID_PARSEX) return 1n;
+  if (id < _ID_EVAL) return 1n;
   extern ___, __;  /* command/expression string and arguments object */
   __ = save();
   ___ = _pyorick_unparse(msg);
@@ -353,7 +353,7 @@ func _pyorick_unparse(msg, raw)
 {
   local value, args;
   id = msg(_pyorick_id);
-  if (id < _ID_PARSEX) {
+  if (id < _ID_EVAL) {
     if (!raw) error, "expecting active message";
     if (id == _ID_NIL) {
       txt = "[]";
@@ -362,13 +362,13 @@ func _pyorick_unparse(msg, raw)
       txt = "__(" + totxt(__(*)) + ")";
     }
 
-  } else if (id == _ID_PARSEX) {
+  } else if (id==_ID_EVAL || id==_ID_EXEC) {
     eq_nocopy, value, msg(value);
-    isf = (value(1) == '=');
+    isf = (id == _ID_EVAL);
     list = where((value == '\n') | (value == '\r'));
     if (numberof(list)) value(list) = '\0';
     txt = strchar(value);
-    if (isf) txt(1) = raw? strpart(txt,2:) : "___" + txt(1);
+    if (isf) txt(1) = raw? strpart(txt,2:) : "___=" + txt(1);
     else if (raw) error, "illegal value or argument";
 
   } else if (id == _ID_GETVAR) {
@@ -376,6 +376,8 @@ func _pyorick_unparse(msg, raw)
   } else if (id == _ID_SETVAR) {
     if (raw == 3) error, "illegal keyword argument in index list";
     txt = strchar(msg(name)) + "=" + _pyorick_unparse(msg(value), 1);
+  } else if (id == _ID_GETSHAPE) {
+    txt = "___=" + "_pyorick_shape(" + strchar(msg(name)) + ")";
 
   } else {
     if (raw && id!=_ID_FUNCALL) error, "illegal argument or index";
@@ -437,6 +439,16 @@ func _pyorick_decode(msg)
   } else {
     return msg;  /* other stuff is not decodable */
   }
+}
+
+func _pyorick_shape(a)
+{
+  id = where(_pyorick_type(*,) == typeof(a));
+  if (numberof(id))
+    id = grow(id-1, dimsof(a));
+  else
+    id = is_func(a)? -1 : -2;
+  return id;
 }
 
 func _pyorick_setslice(a, value, ..)
@@ -564,7 +576,7 @@ func _pyorick_put(msg)
     _pyorick_putlist, msg(value);
   } else if (id == _ID_EOL) {
     /* hdr only */
-  } else if (id == _ID_PARSEX) {
+  } else if (id == _ID_EVAL || id == _ID_EXEC) {
     _pyorick_send, msg(value);
   } else if (id == _ID_GETVAR) {
     _pyorick_send, msg(name);
@@ -575,6 +587,9 @@ func _pyorick_put(msg)
     _pyorick_send, msg(name);
     _pyorick_putlist, msg(args);
     if (id == _ID_SETSLICE) _pyorick_put, msg(value);
+  } else if (id == _ID_GETSHAPE) {
+    _pyorick_send, msg(name);
+    _pyorick_put, msg(value);
   } else {
     _pyorick_panic, "unknown message id";
   }
