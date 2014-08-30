@@ -17,18 +17,14 @@ oy.fun(arg1, arg2, ...)    invoke yorick function fun, returning result
 The following are not yorick variables, but python attributes:
 yo._yorick   is connection object
 oy._yorick   is connection object
-yo._flike    is False
-oy._flike    is True
+yo._flike    is False (subroutine-like interface)
+oy._flike    is True  (function-like interface)
 
-Notes:
-1. yo.fun(args) discards any return value, oy.fun(args) does not
-2. yo.fun[args] and oy.fun[args] are the same as oy.fun(args)
-   except that keyword arguments are not permitted in args list
-3. Using oy.var as an argument gives same result as yo.var, but
-   without sending yorick var value to python and back.
-4. Currently no direct support for yorick output &argument, but could be?
-5. Future extension: yo() enters yorick interactive mode, does not return
-   until user types matching yorick command.
+Deleting the last interface object for a given connection closes the
+connection, terminating yorick.
+
+yo._yorick.setdebug(1)   turns on debugging output, 0 turns off (default)
+yo._yorick.setmode(0)    turns off interactive mode, 1 turns on (default)
 """
 
 # pyorick implements a request-reply message passing model:
@@ -145,19 +141,30 @@ Notes:
 #                     all None.  If the variable is a function, the dict reply
 #                     has item 'func':True.
 
-# attempt to make it work for both python 2.6+ and python 3.0+
+# Attempt to make it work for both python 2.6+ and python 3.x.
+# Avoid both six and future modules, which are often not installed.
 from __future__ import (absolute_import, division,
                         print_function, unicode_literals)
+# Note that these __future__ imports apply only to this module, not to
+# others which may call it.
+# In particular, under 2.x, arguments passed in to this module from callers
+# that do not have unicode_literals in place will generally be non-unicode.
 import sys
 if sys.version_info[0] >= 3:
-  basestring = str     # isinstance('test',str) false under 2.7?  bug??
-from future.builtins import *
+  basestring = str   # need basestring for 2.x isinstance tests for string
+  xrange = range     # below only use xrange where list might be large
+  def _iteritems(d):
+    return d.items()
+else:
+  def _iteritems(d):
+    return d.iteritems()
 
 import numpy as np
 
 import os
 import shlex
 import termios
+import fcntl
 import select
 from numbers import Number
 from collections import Sequence
@@ -351,6 +358,7 @@ class _YorickConnection:
     n = 0
     while n < len(s):
       try:
+        # Note: must guarantee that s representable as 8859 latin-1
         n += os.write(self.pfd, s[n:].encode('iso_8859_1'))
       except:
         _yorick_destroy(self)
@@ -368,7 +376,7 @@ class _YorickConnection:
         p = (0, 0, 1)
       if p[0]:
         try:
-          s += str(os.read(self.pfd, 16384))
+          s += os.read(self.pfd, 16384).decode('iso_8859_1')
         except:
           p = (0, 0, 1)
       if p[2]:
@@ -427,7 +435,7 @@ class _YorickConnection:
   def _caller(self, ident, name, *args, **kwargs):
     msg = _encode_name(ident, name)
     v = [_encode(arg) for arg in args]
-    for key, value in kwargs.items():
+    for key, value in _iteritems(kwargs):
       m = _encode_name(_ID_SETVAR, key)
       m['value'] = _encode(value)
       v.append(m)
@@ -706,6 +714,8 @@ class _YorickConnection:
     # other interfaces are readinto, copyto, frombuffer, getbuffer
     if not self.rfd:
       return None   # some fatal exception has already occurred
+    # note: x.data[n:] fails in python 3.4 if x is scalar
+    xx = x.reshape(x.size).view(dtype=np.uint8)
     n = 0
     while n < x.nbytes:
       try:
@@ -714,7 +724,7 @@ class _YorickConnection:
         _yorick_destroy(self)  # failure fatal, need to shut down yorick
         raise PYorickError("os.read failed, yorick killed")
       m = len(s)
-      x.data[n:n+m] = s
+      xx.data[n:n+m] = s  # fails in python 3.4 unless xx dtype=np.unit8
       n += m
     if self.debug and n:
       print(("P>recv: {0} bytes".format(n)))
@@ -723,10 +733,12 @@ class _YorickConnection:
     """Write numpy array x to self.wfd."""
     if not self.wfd:
       return None   # some fatal exception has already occurred
+    # note: x.data[n:] fails in python 3.4 if x is scalar
+    xx = x.reshape(x.size).view(dtype=np.uint8)
     n = 0
     while n < x.nbytes:
       try:
-        m = os.write(self.wfd, x.data[n:])
+        m = os.write(self.wfd, xx.data[n:])
       except:
         m = -1
       if m<0:
@@ -744,7 +756,7 @@ class _YorickRef:
     self.name = name
   def __repr__(self):
     flag = "function-like" if self.flike else "subroutine-like"
-    return "<yorick variable {0} ({1}), pid={3}>".format(self.name, flag,
+    return "<yorick variable {0} ({1}), pid={2}>".format(self.name, flag,
                                                          self.yorick.pid)
   def __call__(self, *args, **kwargs):   # ref(arglist)
     if self.flike:
@@ -1003,7 +1015,7 @@ def _encode(x):
   elif isinstance(x, dict) and ('_pyorick_id' not in x):
     if all(isinstance(xx, basestring) for xx in x):
       v = []
-      for key, value in x.items():
+      for key, value in _iteritems(x):
         m = _encode_name(_ID_SETVAR, key)
         m['value'] = _encode(value)
         v.append(m)
@@ -1057,12 +1069,12 @@ def _from_bytes(shape, lens, v):
   i1 = np.cumsum(lens)
   i0 = i1 - lens
   i1 -= 1     # skip trailing 0 bytes (not optional in string arrays)
-  v = [v[i0[i]:i1[i]].tostring().decode('iso_8859_1') for i in range(size)]
+  v = [v[i0[i]:i1[i]].tostring().decode('iso_8859_1') for i in xrange(size)]
   for i in range(ndim-1):
     # remains to convert 1D list of strings to nested lists
     # shape is in yorick order, fastest first (not python c-order)
     n = shape[i]
-    v = [v[j:j+n] for j in range(0, size, n)]
+    v = [v[j:j+n] for j in xrange(0, size, n)]
     size /= n  # now top level is list of size lists
   return v if ndim else v[0]
 
@@ -1074,8 +1086,8 @@ def _is_sysattr(name):
   return len(name)>3 and name[0:2]=='__' and name[-2:]=='__'
 
 def _yorick_create(yorick_command, argv, args):
-  ptoy = os.pipe()
-  ytop = os.pipe()
+  ptoy = _inheritable_pipe(0)
+  ytop = _inheritable_pipe(1)
   pid, pfd = os.forkpty()
   # pid = os.fork()
   if not pid:   # subprocess side
@@ -1095,6 +1107,15 @@ def _yorick_create(yorick_command, argv, args):
   t[3] = t[3] & ~termios.ECHO
   termios.tcsetattr(pfd, termios.TCSANOW, t)
   return rfd, wfd, pfd, pid
+
+# See PEP 443.  After about Python 3.3, pipes are close-on-exec by default.
+def _inheritable_pipe(side):
+  p = os.pipe()
+  if hasattr(fcntl, 'F_SETFD') and hasattr(fcntl, 'FD_CLOEXEC'):
+    flags = fcntl.fcntl(p[side], fcntl.F_GETFD)
+    flags &= ~fcntl.FD_CLOEXEC
+    fcntl.fcntl(p[side], fcntl.F_SETFD, flags)
+  return p
 
 def _yorick_destroy(yorick):
   if yorick.pid is not None:

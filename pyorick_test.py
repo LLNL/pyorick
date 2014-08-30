@@ -1,8 +1,3 @@
-# attempt to make it work for both python 2.6+ and python 3.0+
-from __future__ import (absolute_import, division,
-                        print_function, unicode_literals)
-from future.builtins import *
-
 import numpy as np
 from pyorick import *
 
