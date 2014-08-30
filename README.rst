@@ -13,5 +13,5 @@ Features:
 - get or set slices of large yorick arrays
 
 Most of the data is exchanged via binary pipes between the two
-interpreters.  Yorick runs in a request-response mode.  Python prints
+interpreters.  Yorick runs in a request-reply mode.  Python prints
 anything yorick sends to stdout or stderr except prompts.
