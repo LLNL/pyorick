@@ -143,10 +143,11 @@ yo._yorick.setmode(0)    turns off interactive mode, 1 turns on (default)
 
 # Attempt to make it work for both python 2.6+ and python 3.x.
 # Avoid both six and future modules, which are often not installed.
-from __future__ import (absolute_import, division,
-                        print_function, unicode_literals)
+#from __future__ import (absolute_import, division,
+#                        print_function, unicode_literals)
+from __future__ import print_function
 # Note that these __future__ imports apply only to this module, not to
-# others which may call it.
+# others which may import it.
 # In particular, under 2.x, arguments passed in to this module from callers
 # that do not have unicode_literals in place will generally be non-unicode.
 import sys
@@ -781,8 +782,11 @@ _types = [c_byte, c_short, c_int, c_long, c_longlong,
           c_ubyte, c_ushort, c_uint, c_ulong, c_ulonglong,
           np.csingle, np.complex_, None]
 _types = [(np.dtype(t) if t else None) for t in _types]
-_isizes = [t.itemsize for t in _types[0:5]]
-_fsizes = [t.itemsize for t in _types[5:8]]
+_kinds = ['i']*5 + ['f']*3 + ['u']*5 + ['c']*3   # 'b' same as 'u' here
+# yorick does not support longlong unless it is same size as long
+if _types[4].itemsize > _types[3].itemsize:
+  _types[4] = _types[12] = None
+_sizes = [(t.itemsize if t is not None else None) for t in _types]
 _py_long = _types[3]
 
 # id 0-15 are numeric types:
@@ -810,36 +814,37 @@ _ID_NUMERIC = [i for i in range(16)]
 _ID_YARRAY = [i for i in range(17)]
 _ID_ACTIVE = [i for i in range(_ID_EVAL, _ID_GETSHAPE+1)]
 
+# Numpy ndarrays have a dtype.kind = biufcSUV, meaning, respectively:
+#   boolean, signed integer, unsigned integer, floating point, complex,
+#   byte-string (b'...'), unicode (u'...'), and void (other object)
+# The non-numeric kinds generally group several items - characters for
+# S and U kinds - into each element of the ndarray, while the numeric kinds
+# always have one item per element (counting a complex pair as one item).
+#
+# Here, we must figure out which primitive C numerical type - to be precise,
+# which index into the _types array - corresponds to x.dtype.  The rules are:
+# 0. Non-numeric kinds SUV are an error.  Eventually we could support them
+#    by transferring as char or uchar raw data, with a leading dimension
+#    added for the byte size of an individual ndarray element.
+# 1. Kind i is a signed integer ctype, kinds b and u are unsigned integer
+#    ctypes, kind f is a floating ctype, and kind c is a pair of floating
+#    ctypes.
+# 2. The dtype.itemsize must exactly match the _types[i].itemsize.
+# 3. Among equal _types[i].itemsize, long is the preferred integer and
+#    double is the preferred floating type.  Otherwise, the type with the
+#    "smallest name" is preferred.
+# long is preferred integer type, double is preferred floating type
+_types_pref = [3, 0, 1, 2, 4, 6, 5, 7, 11, 8, 9, 10, 12, 14, 13, 15]
+_sizes_pref = [_sizes[i] for i in _types_pref]
 def _array_dtype(x):
   k = x.dtype.kind
+  if k == 'b':
+    k = 'u'   # no distinction between 'b' and 'u' in protocol
+  szp = [(_sizes_pref[i] if _kinds[i]==k else 0) for i in xrange(16)]
   n = x.dtype.itemsize
-  if k=='i' or k=='u' or k=='b':
-    if n in _isizes:
-      n = _isizes.index(n) if (n!=_isizes[3]) else 3
-    else:
-      n = -1
-    if n == 4:
-      n = -1   # longlong unsupported in yorick if bigger than long
-    if k!='i' and n>=0:
-      n += 8
-    t = _types[n] if n>=0 else None
-  elif k=='f':
-    if n in _fsizes:
-      n = _fsizes.index(n)+5 if (n!=_fsizes[1]) else 6
-    else:
-      n = -1
-    if n == 7:
-      n = -1    # longdouble unsupported in yorick
-  elif k=='c':
-    if n == _types[14].itemsize:
-      n = 14
-    elif n == _types[13].itemsize:
-      n = 13
-    else:
-      n = -1
-  if n < 0:
+  if n not in szp:
     raise PYorickError("unsupported np.array dtype for pyorick")
-  return n
+  return _types_pref[szp.index(n)]
 
 def _is_array_of(x, aclass):
   if isinstance(x, aclass):
@@ -916,10 +921,6 @@ def _encode(x):
     isa = _is_array_of(x, Number)
     if isa:
       x = np.array(x)
-    else:
-      isa = _is_array_of(x, bool)
-      if isa:
-        x = np.array(x, dtype=int32)
   if isa and not x.flags['CARRAY']:
     x = np.copy(x, 'C')   # ensure nparray has C order, contiguous
   if isa and (x.dtype.type is np.string_):
