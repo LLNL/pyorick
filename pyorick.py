@@ -7,6 +7,7 @@ yo.var = <expr>            redefine variable var in yorick
 yo.var                     retrieve contents of yorick variable var
 yo("yorick code")          parse and execute yorick code, returning None
 yo("pyformat", arg1, ...)    means yo("pyformat".format(arg1, arg2, ...))
+yo()                       enter yorick interactive mode (py to exit)
 yo.fun(arg1, arg2, ...)    invoke yorick function fun as subroutine
 oy.var                     create reference to yorick variable var
 oy("yorick expression")    parse, execute, and return yorick expression
@@ -152,10 +153,11 @@ from __future__ import print_function
 # that do not have unicode_literals in place will generally be non-unicode.
 import sys
 if sys.version_info[0] >= 3:
-  basestring = str   # need basestring for 2.x isinstance tests for string
-  xrange = range     # below only use xrange where list might be large
-  def _iteritems(d):
+  basestring = str    # need basestring for 2.x isinstance tests for string
+  xrange = range      # only use xrange where list might be large
+  def _iteritems(d):  # only use iteritems when dict might be large
     return d.items()
+  raw_input = input
 else:
   def _iteritems(d):
     return d.iteritems()
@@ -258,10 +260,12 @@ class Yorick:
     return "".join(["<yorick", kind, "interface to pid=",
                     str(self._yorick.pid), ">"])
 
-  def __call__(self, command, *args, **kwargs):  # pipe(command)
+  def __call__(self, command=None, *args, **kwargs):  # pipe(command)
     if args or kwargs:
       command = command.format(*args, **kwargs)
-    if self._flike:
+    if command is None:
+      self._yorick.termloop()
+    elif self._flike:
       return self._yorick.evaluate(command)
     else:
       return self._yorick.execute(command)
@@ -374,7 +378,7 @@ class _YorickConnection:
       try:
         p = select.select([self.pfd], [], [self.pfd], 0)
       except:
-        p = (0, 0, 1)
+        p = ([], [], [self.pfd])
       if p[0]:
         try:
           s += os.read(self.pfd, 16384).decode('iso_8859_1')
@@ -507,6 +511,59 @@ class _YorickConnection:
         return result
       return _decode(m)
     raise PYorickError("active reply from yorick not yet supported")
+
+  def process_request(self):
+    self.need_reply = True  # reverse normal sequence
+    msg = self.get_msg();
+    ident = msg['_pyorick_id']
+    if ident < _ID_EVAL:
+      # pause until handshake on terminal
+      while self.last_prompt != "ExitTerminalMode> ":
+        self.flush()
+      # send acknowledgement back to yorick
+      self.send(np.array([_ID_NIL, 0], dtype=_py_long))
+      self.need_reply = False  # next message will also be to yorick
+      return False
+    m = _err_reply
+    try:
+      if ident == _ID_EVAL or ident == _ID_EXEC:
+        mode = 'eval' if ident==_ID_EVAL else 'exec'
+        command = _bytes2str(msg['name']).replace('\0', '\n')
+        m = _encode(eval(compile(command, '<pyorick string>', mode), globals()))
+    finally:
+      self.put_msg(m)
+    return True
+
+  def wait_for_request(self):
+    while not self.last_prompt:
+      p = select.select([self.pfd, self.rfd], [], [self.pfd, self.rfd])
+      if self.rfd in p[0]:  # process any rfd input before terminal
+        return True
+      if self.pfd in p[0]:
+        self.flush()
+      if p[2]:
+        raise PYorickError("select error")
+    return False
+
+  def termloop(self):
+    if not self.mode:
+      raise PYorickError("cannot enter yorick terminal mode from batch mode")
+    print("--> yorick prompt (type py to return to python):")
+    self.subcall("pyorick", -1)
+    # subcall get_reply already did wait_for_prompt
+    running = True
+    while running:
+      try:
+        self.py2yor(raw_input(self.last_prompt))
+        self.flush(1)
+        while self.wait_for_request():
+          running = self.process_request()
+      except KeyboardInterrupt:
+        self.last_prompt = ''
+        self.py2yor('\x03', True)  # send ctrl-c
+        self.wait_for_prompt()
+    self.wait_for_prompt()  # gobble prompt after acknowledgement
+    print("--> python prompt:")
 
   ########################################################################
   # high level binary pipe i/o
@@ -696,7 +753,7 @@ class _YorickConnection:
         if ident == _ID_SETSLICE:
           self.put_msg(msg['value'], 1)
 
-      if not recurse:
+      if (not recurse) and (ident >= _ID_EVAL):
         self.need_reply = True
     except:
       _yorick_destroy(self)
@@ -814,6 +871,9 @@ _ID_NUMERIC = [i for i in range(16)]
 _ID_YARRAY = [i for i in range(17)]
 _ID_ACTIVE = [i for i in range(_ID_EVAL, _ID_GETSHAPE+1)]
 
+_err_reply = {'_pyorick_id': _ID_EOL,
+              'hdr': np.array([_ID_EOL, 1], dtype=_py_long), 'value': None}
+
 # Numpy ndarrays have a dtype.kind = biufcSUV, meaning, respectively:
 #   boolean, signed integer, unsigned integer, floating point, complex,
 #   byte-string (b'...'), unicode (u'...'), and void (other object)
@@ -895,7 +955,7 @@ def _decode(msg):
 
   # should active messages be processed here?
   elif ident in _ID_ACTIVE:
-    raise PYorickError("active message from yorick not yet supported")
+    raise PYorickError("quoted active message from yorick not yet supported")
 
   else:
     raise PYorickError("unrecognized message from yorick? (BUG?)")
@@ -1131,5 +1191,5 @@ def _yorick_destroy(yorick):
       yorick.need_reply = False
 
 #if __name__ == "__main__":
-#  from pyorick_test import pytest
+#  from pyorick_test import *
 #  pytest()

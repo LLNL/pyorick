@@ -13,20 +13,6 @@
  * You may also set _pyorick_rfd and _pyorick_wfd by hand before invoking
  * this script for debugging purposes.
  */
-_pyorick_mode = 1n;
-if (is_void(_pyorick_rfd)) {
-  if (is_void(command_line)) command_line = get_argv(); /* e.g. -batch */
-  if (numberof(command_line) >= 2) {
-    _pyorick_rfd = tonum(command_line(1:2));
-    if (allof((_pyorick_rfd>=0) & (_pyorick_rfd<1e8) & !(_pyorick_rfd%1))) {
-      _pyorick_wfd = long(_pyorick_rfd(2));
-      _pyorick_rfd = long(_pyorick_rfd(1));
-      command_line = (numberof(command_line)>2)? command_line(3:) : [];
-      _pyorick_mode = 0n;
-      set_idler, , 4;  /* print error with line# before after_error */
-    }
-  }
-}
 
 func pyorick(mode)
 /* DOCUMENT pyorick
@@ -69,9 +55,14 @@ func pyorick(mode)
       _pyorick_sending = 0;
       swap, pydebug, _pydebug;
     }
+  } else if (mode < 0) {
+    _pyorick_mode = 1n;
+    set_idler, , 0;
+    after_error = [];
   } else {
     _pyorick_mode = (mode != 0);
-    if (!_pyorick_mode) set_idler, _pyorick_idler, 4;
+    if (_pyorick_mode) set_idler, , 4;
+    else set_idler, _pyorick_idler, 4;
     after_error = _pyorick_err_handler;
   }
 }
@@ -98,7 +89,28 @@ local pydebug;
  */
 func py(command, ..)
 {
-  error, "not yet implemented -- only responds to python requests for now";
+  if (is_void(command)) {  /* exit yorick terminal mode */
+    _pyorick_send, [_ID_EOL, 0];  /* tell python to exit terminal mode */
+    write, format="%s", "ExitTerminalMode> ";
+    /* pause for python to acknowledge with _ID_NIL message */
+    if (!is_void(_pyorick_decode(_pyorick_get())))
+      _pyorick_panic, "bad acknowledgement exiting yorick terminal mode";
+    _pyorick_mode = 1n;
+    set_idler, , 4;
+    after_error = _pyorick_err_handler;
+    if (pydebug) write, "Y>py exiting yorick terminal mode";
+    dbexit, 0;  /* return, making sure we are out of dbug> mode */
+  } else if (!more_args()) {
+    id = am_subroutine()? _ID_EXEC : _ID_EVAL;
+    command = strchar(command)(1:-1);
+    list = where(!command);
+    if (numberof(list)) command(list) = '\n';
+    _pyorick_send, [id, numberof(command)];
+    _pyorick_send, command;
+    return _pyorick_decode(_pyorick_get());
+  } else {
+    error, "not yet implemented, use py,command or py(expression)";
+  }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -201,7 +213,7 @@ func _pyorick_err_handler
 {
   extern _pyorick_errmsg;
   if (pydebug) write, "Y>_pyorick_err_handler called";
-  if (_pyorick_looping > 100)
+  if (_pyorick_looping > 32)
     _pyorick_panic, "caught in exception loop\n" +
       (_pyorick_errmsg? _pyorick_errmsg : "");
   if (_pyorick_looping < 2) _pyorick_errmsg = catch_message;
@@ -213,14 +225,13 @@ func _pyorick_err_handler
 _pyorick_looping = 0;
 func _pyorick_idler
 {
-  extern after_error;
-  after_error = _pyorick_err_handler;
   _pyorick_looping += 1;
   if (pydebug) write, "Y>_pyorick_idler: enter";
   for (__=___=[] ; !_pyorick_mode ; __=___=[]) pyorick;
   if (pydebug) write, "Y>_pyorick_idler: exit";
-  if (_pyorick_mode || _pyorick_looping>=100) set_idler, , 4;
+  if (_pyorick_mode || _pyorick_looping>64) set_idler, , 4;
   else if (!is_void(_pyorick_rfd)) set_idler, _pyorick_idler;
+  _pyorick_looping = 0;
 }
 
 func _pyorick_wait(void)
@@ -611,5 +622,17 @@ func _pyorick_puterr
   }
 }
 
-_pyorick_sending = 0;
-if (!_pyorick_mode) set_idler, _pyorick_idler, 1;
+/* parse command line to get rfd, wfd file descriptors */
+_pyorick_mode = 1n;
+if (is_void(_pyorick_rfd)) {
+  if (is_void(command_line)) command_line = get_argv(); /* e.g. -batch */
+  if (numberof(command_line) >= 2) {
+    _pyorick_rfd = tonum(command_line(1:2));
+    if (allof((_pyorick_rfd>=0) & (_pyorick_rfd<1e8) & !(_pyorick_rfd%1))) {
+      _pyorick_wfd = long(_pyorick_rfd(2));
+      _pyorick_rfd = long(_pyorick_rfd(1));
+      command_line = (numberof(command_line)>2)? command_line(3:) : [];
+      pyorick, 0;
+    }
+  }
+}
