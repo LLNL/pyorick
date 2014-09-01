@@ -2,30 +2,57 @@
 
 """Interface to yorick as a subprocess.
 
-yo, oy = yorick()          start and connect to yorick
-yo.var = <expr>            redefine variable var in yorick
-yo.var                     retrieve contents of yorick variable var
-yo("yorick code")          parse and execute yorick code, returning None
-yo("pyformat", arg1, ...)    means yo("pyformat".format(arg1, arg2, ...))
-yo()                       enter yorick interactive mode (py to exit)
-yo.fun(arg1, arg2, ...)    invoke yorick function fun as subroutine
-oy.var                     create reference to yorick variable var
-oy("yorick expression")    parse, execute, and return yorick expression
-oy.ary[ndx1, ndx2, ...]            retrieve slice of yorick array ary
-oy.ary[ndx1, ndx2, ...] = <expr>   set slice of yorick array ary
-oy.fun(arg1, arg2, ...)    invoke yorick function fun, returning result
+yo = Yorick()              start and connect to yorick
+yo.kill()                  stop yorick (automatic if yo deleted)
+yo("code")                 parse and execute yorick code, return None
+yo("=expr")                parse and execute yorick expression, return value
+  yo("pyformat", arg1, ...)  means yo("pyformat".format(arg1, ...))
+yo.v.varname               return value of yorick variable, like yo("=varname")
+yo.v.varname = <expr>      set value of yorick variable varname to <expr>
+yo.r.varname               return reference to yorick variable
+yo.r.varname = <expr>      same as yo.v.varname=<expr>
+yo.v.subname(arg1, ..., key1=k1, ...)  invoke yorick subname as subroutine
+yo.r.funname(arg1, ..., key1=k1, ...)  return value of yorick function funname
+yo.v("code")               same as yo("code")
+yo.r("expr")               same as yo("=expr")
+yo.r.aryname[ndx1, ...]    return slice of yorick aryname
+yo.r.aryname[ndx1, ...] = <expr>    set slice of yorick aryname to <expr>
+type, shape = yo.r.varname.info()   return type and shape for yorick varname
 
-The following are not yorick variables, but python attributes:
-yo._yorick   is connection object
-oy._yorick   is connection object
-yo._flike    is False (subroutine-like interface)
-oy._flike    is True  (function-like interface)
+yo()                       enter yorick terminal mode
+  py  (yorick command)     from yorick terminal mode returns to python
+  py, "code"               from yorick terminal mode to exec code in python
+  py("expr")               from yorick terminal mode to eval expr in python
 
-Deleting the last interface object for a given connection closes the
-connection, terminating yorick.
+The slice indices use yorick indexing semantics (fastest varying index first,
+1-origin, slice max non-inclusive).  To get python indexing semantics, use
+the alternate reference attribute p:
+  yo.p.aryname[ndx1, ...]
+  yo.p.aryname[ndx1, ...] = <expr>
+Beginning with either the r attribute form or the p attribute form, you can
+specify the indexing semantics explicitly (for either getting or setting
+the slice) like this:
+  yo.r.aryname.p()[ndx1, ...]   same as yo.p.aryname[ndx1, ...]
+  yo.p.aryname.y()[ndx1, ...]   same as yo.r.aryname[ndx1, ...]
 
-yo._yorick.setdebug(1)   turns on debugging output, 0 turns off (default)
-yo._yorick.setmode(0)    turns off interactive mode, 1 turns on (default)
+The yo.v.subname(args) form first causes yorick to return yo.v.subname
+as a reference, since subroutines, file handles, and the like cannot
+be transferred.  To avoid that initial round trip, but still get a
+subroutine call, use yo.p.subname(args) instead.
+
+The <expr> transferred to yorick, and the values returned by yorick,
+may be any yorick array data type except pointers and struct instances
+(that is, string or any number).  On the python side, the numbers are
+numpy ndarray instances, while string arrays are nested lists.  Nested
+lists of numbers as an <expr> will be converted to an ndarray.  The
+expressions may also include arbitrary lists of these primary array
+objects, which map to oxy objects with anonymous members on the yorick
+side, or dict objects with string keys, which map to oxy objects with
+named members on the yorick side.
+
+Also:
+yo.setdebug(1)   turns on debugging output, 0 turns off (default)
+yo.setmode(0)    turns off interactive mode, 1 turns on (default)
 """
 
 # pyorick implements a request-reply message passing model:
@@ -146,11 +173,11 @@ yo._yorick.setmode(0)    turns off interactive mode, 1 turns on (default)
 # Avoid both six and future modules, which are often not installed.
 #from __future__ import (absolute_import, division,
 #                        print_function, unicode_literals)
-from __future__ import print_function
 # Note that these __future__ imports apply only to this module, not to
 # others which may import it.
 # In particular, under 2.x, arguments passed in to this module from callers
 # that do not have unicode_literals in place will generally be non-unicode.
+from __future__ import print_function
 import sys
 if sys.version_info[0] >= 3:
   basestring = str    # need basestring for 2.x isinstance tests for string
@@ -175,134 +202,40 @@ from ctypes import c_byte, c_ubyte, c_short, c_ushort, c_int, c_uint,\
                    c_long, c_ulong, c_longlong, c_ulonglong,\
                    c_float, c_double, c_longdouble
 
-def yorick(flike=None, batch=False, args="", ypath="yorick", ipath="pyorick.i"):
+def yorick(args="", ypath="yorick", ipath="pyorick.i", batch=False):
   """Return (yo,oy) pair of yorick interface objects.
 
   Optional parameters:
-  flike     just return function-like interface if True, subroutine-like
-              interface if False, or opposite kind if a Yorick instance
-    Following arguments ignored if flike is a Yorick instance:
   args      (default "") additional yorick command line arguments
-  batch     (default False) true to start yorick in batch mode
   ypath     (default "yorick") path to yorick executable
   ipath     (default "pyorick.i") path to pyorick.i startup script
-
-  Starts yorick as a subprocess with two pipes, one for python
-  to yorick, and one for yorick to python messages.  The yorick
-  stdin, stdout, and stderr streams are captured as a pty-tty,
-  but are unused for exchanging data or commands.  The interface
-  objects manage data and commands flowing through the pipes.
-  Roughly speaking, the yo interface is subroutine-like, while
-  the oy interface is function-like.
+  batch     (default False) true to start yorick in batch mode
   """
-  if flike is not None:
-    return Yorick(flike, None, batch, args, ypath, ipath)
-  yo = Yorick(connection=_YorickConnection(batch, args, ypath, ipath))
-  return (yo, Yorick(yo))
+  y = Yorick(args, ypath, ipath, batch)
+  return (y.v, y.r)
 
-# User interface to a _YorickConnection
+# Manage the actual connection to a yorick process.
 class Yorick:
-  """Interface to a yorick process."""
-  def __init__(self, flike=False, connection=None,
-               batch=False, args="", ypath="yorick", ipath="pyorick.i"):
+  """Manage connection to a yorick process."""
+  def __init__(self, args="", ypath="yorick", ipath="pyorick.i", batch=False):
     """Construct a yorick interface object.
 
+    Starts yorick as a subprocess with two pipes, one for python
+    to yorick, and one for yorick to python messages.  The yorick
+    stdin, stdout, and stderr streams are captured as a pty-tty,
+    but are unused for exchanging data or commands.  The interface
+    objects manage data and commands flowing through the pipes.
+
     Optional arguments:
-    flike  Is this interface function-like (True) or subroutine-like (False)?
-           Default: False, or not connection._flike if connection specified.
-    connection  Another Yorick instance connected to the yorick process.
-           Returned interface will have the opposite _flike as connection.
-           Default: None
-      Following arguments are ignored if connection is not None:
-    batch  True to start yorick with -batch (instead of -i).
-           Default: False
     args   Arguments to add to yorick command line, parsed by shlex.split.
            Default: ""
     ypath  Path to yorick executable.  Mostly useful for debugging.
            Default: "yorick"
     ipath  Path to pyorick.i yorick startup code.  Mostly useful for debugging.
            Default: "pyorick.i"
-
-    Yorick interface objects (say yo) have custom call, get and set attribute
-    methods so that:
-      yo("yorick code")   sends yorick code to be parsed and executed
-      yo.x                represents the yorick variable named x
-
-    There are two different kinds of interface object, subroutine-like (yo)
-    objects and function-like (oy) objects.  The differences are:
-      yo("yorick command")     executes the command, discarding any result
-      oy("yorick expression")  evaluates the yorick expression and returns it
-      yo.f(arglist)   executes yorick function f as a subroutine
-      oy.f(arglist)   executes yorick function f as a function, returns result
-      yo.a[indexlist] uses python index list semantics on yorick array a
-      oy.a[indexlist] uses yorick index list semantics on yorick array a
-
-    When you delete the last Yorick interface object for a given yorick
-    process, the process is killed.
+    batch  True to start yorick with -batch (instead of -i).
+           Default: False
     """
-    if isinstance(flike, Yorick): # easy way to get opposite connection flike
-      if connection is None:
-        connection = flike._yorick
-      flike = not flike._flike
-    else:
-      flike = bool(flike)
-    self.__dict__['_flike'] = flike  # self._flike calls __setattr__
-    if connection is None:
-      connection = _YorickConnection(batch, args, ypath, ipath)
-    self.__dict__['_yorick'] = connection.attach()
-
-  def __del__(self):
-    if self._yorick.detach():
-      del self._yorick  # last interface to disconnect kills connection
-
-  def __repr__(self):
-    kind = " function-like " if self._flike else " subroutine-like "
-    return "".join(["<yorick", kind, "interface to pid=",
-                    str(self._yorick.pid), ">"])
-
-  def __call__(self, command=None, *args, **kwargs):  # pipe(command)
-    if args or kwargs:
-      command = command.format(*args, **kwargs)
-    if command is None:
-      self._yorick.termloop()
-    elif self._flike:
-      return self._yorick.evaluate(command)
-    else:
-      return self._yorick.execute(command)
-
-  def __setattr__(self, name, value):            # pipe.name = value
-    if name not in self.__dict__:
-      self._yorick.setvar(name, value)
-    else:
-      object.__setattr__(self, name, value)
-
-  def __getattr__(self, name):                   # pipe.name
-    # inspect module causes serious problems by probing for names
-    # ipython also probes for getdoc attribute
-    if _is_sysattr(name) or name=='getdoc':
-      raise AttributeError("Yorick instance has no attribute '"+name+"'")
-    if name in ['_flike', '_yorick']:
-      return self.__dict__[name]
-    if self._flike:
-      return _YorickRef(self._yorick, self._flike, name)
-    else:
-      # eventually want this to also return a _YorickRef
-      return self._yorick.getvar(name)
-
-class PYorickError(Exception):
-  """Exception raised by pyorick module."""
-  pass
-
-NewAxis = {}  # use this as non-None flag for numpy.newaxis
-# eventually could support yorick index range in this way
-
-########################################################################
-# Remainder of module is hidden from users, who interact only with
-# the two instances of _YorickInterface returned by yorick().
-
-# Manage the actual connection to a yorick process.
-class _YorickConnection:
-  def __init__(self, batch=False, args="", ypath="yorick", ipath="pyorick.i"):
     self.batch = bool(batch)
     if batch:
       argv = [ypath, "-batch", ipath]
@@ -316,6 +249,10 @@ class _YorickConnection:
     self.last_prompt = ''
     if not batch:  # immediately switch to interactive mode
       self.setmode(True)
+    # create the three flavors of _YorickSugar objects
+    self.v = _YorickSugar(self, 0)
+    self.r = _YorickSugar(self, 1)
+    self.p = _YorickSugar(self, 2)
 
   def __del__(self):
     _yorick_destroy(self)
@@ -323,18 +260,22 @@ class _YorickConnection:
   def __repr__(self):
     return "<yorick process, pid={0}>".format(self.pid)
 
+  def __call__(self, command=None, *args, **kwargs):  # pipe(command)
+    if args or kwargs:
+      command = command.format(*args, **kwargs)
+    if command is None:
+      self.termloop()
+    elif command[0:1] == '=':
+      return self.evaluate(command[2:])
+    else:
+      return self.execute(command)
+
   def check_live(self):
     if self.pid is None:
       raise PYorickError("no yorick connection")
 
-  def attach(self):
-    self.uses += 1
-    return self
-  def detach(self):
-    self.uses -= 1
-    if self.uses <= 0:
-      _yorick_destroy(self)  # kill the yorick process
-    return self.uses <= 0    # caller should del instance if true
+  def kill(self):
+    _yorick_destroy(self)
 
   def setdebug(self, on):
     on = bool(on)
@@ -419,10 +360,10 @@ class _YorickConnection:
     msg = _encode_name(_ID_EXEC, command)
     return self.get_reply(msg)
 
-  def getvar(self, name, flike=None):
+  def getvar(self, name, reftype=None):
     msg = _encode_name(_ID_GETVAR, name)
-    if flike is not None:
-      msg['flike'] = flike
+    if reftype is not None:
+      msg['reftype'] = reftype
     return self.get_reply(msg)
 
   def setvar(self, name, value, passive=None):
@@ -447,21 +388,21 @@ class _YorickConnection:
     msg['args'] = v
     return self.get_reply(msg)
 
-  def getslice(self, flike, name, key):
+  def getslice(self, reftype, name, key):
     if not isinstance(key, tuple):  # single index case
       key = (key,)
     msg = _encode_name(_ID_GETSLICE, name)
     msg['args'] = [_encode(arg) for arg in key]
-    if not flike:
+    if reftype != 1:
       msg['args'] = _fix_index_list(msg['args'])
     return self.get_reply(msg)
 
-  def setslice(self, flike, name, key, value):
+  def setslice(self, reftype, name, key, value):
     if not isinstance(key, tuple):  # single index case
       key = (key,)
     msg = _encode_name(_ID_SETSLICE, name)
     msg['args'] = [_encode(arg) for arg in key]
-    if not flike:
+    if reftype != 1:
       msg['args'] = _fix_index_list(msg['args'])
     msg['value'] = _encode(value)
     return self.get_reply(msg)
@@ -489,28 +430,35 @@ class _YorickConnection:
     if ident == _ID_EOL:
       if m['hdr'][1]==2 and msg['_pyorick_id']==_ID_GETVAR:
         # unrepresentable data gets variable reference
-        flike = msg['flike'] if 'flike' in msg else False
-        return _YorickRef(self, flike, _bytes2str(msg['name']))
+        reftype = msg['reftype'] if 'reftype' in msg else 0
+        return _YorickRef(self, reftype, _bytes2str(msg['name']))
       else:
         raise PYorickError("yorick reports error")
     elif ident < _ID_EVAL:  # got required passive message
       if msg['_pyorick_id']==_ID_GETSHAPE:
         if m['hdr'][0] != 3:
           PYorickError("unexpected reply to _ID_GETSHAPE request")
-        result = {'dtype':None, 'ndim':None, 'shape':None}
+        result = (None, None)
         shape = msg['value'].tolist()
         if isinstance(shape, list):
           if shape[0] == _ID_STRING:
-            result['string'] = True
+            result[0] = 1
           else:
-            result['dtype'] = _types[shape[0]]
+            result[0] = _types[shape[0]].type
           result['ndim'] = shape[1]
           result['shape'] = tuple(shape[2:][::-1])
-        elif shape == -1:
-          result['func'] = True
+        else:
+          result[0] = 1 - shape
+        # result[0] is type if numeric, else
+        # 1 string, 2 func, 3 list, 4 dict, 5 slice, 6 None
+        # 7 binary file, 8,9 other
         return result
       return _decode(m)
     raise PYorickError("active reply from yorick not yet supported")
+
+  ########################################################################
+  # yorick terminal mode
+  ########################################################################
 
   def process_request(self):
     self.need_reply = True  # reverse normal sequence
@@ -806,25 +754,94 @@ class _YorickConnection:
     if self.debug and n:
       print(("P>send: {0} bytes sent".format(n)))
 
+class PYorickError(Exception):
+  """Exception raised by pyorick module."""
+  pass
+
+class _NewAxis:
+  pass
+new_axis = _NewAxis()
+
+########################################################################
+# Remainder of module is unneeded by and hidden from users.
+
+# syntactic sugar for Yorick connection
+# - make attribute name (unquoted in python source!) correspond to
+#   yorick variable name
+# - every attribute except _yorick and _reftype represent yorick variables
+# come in 3 flavors:
+# reftype = 0   by value
+# reftype = 1   by reference
+# reftype = 2   by reference, python index semantics
+class _YorickSugar:
+  def __init__(self, connection, reftype):
+    self.__dict__['_reftype'] = reftype  # self._reftype calls __setattr__
+    self.__dict__['_yorick'] = connection
+
+  def __repr__(self):
+    s = "<yorick interface {0} to pid={1}>"
+    flag = ["by value", "by reference", "by reference (p-index)"][self._reftype]
+    return s.format(flag, self._yorick.pid)
+
+  def __call__(self, command=None, *args, **kwargs):  # pipe(command)
+    if args or kwargs:
+      command = command.format(*args, **kwargs)
+    if command is None:
+      self._yorick.termloop()
+    elif self._reftype:
+      return self._yorick.evaluate(command)
+    else:
+      return self._yorick.execute(command)
+
+  def __setattr__(self, name, value):            # pipe.name = value
+    if name not in self.__dict__:
+      self._yorick.setvar(name, value)
+    else:
+      object.__setattr__(self, name, value)
+
+  def __getattr__(self, name):                   # pipe.name
+    # inspect module causes serious problems by probing for names
+    # ipython also probes for getdoc attribute
+    if _is_sysattr(name) or name=='getdoc':
+      raise AttributeError("_YorickSugar instance has no attribute '"+name+"'")
+    if name in ['_reftype', '_yorick']:
+      return self.__dict__[name]
+    if self._reftype:
+      return _YorickRef(self._yorick, self._reftype, name)
+    else:
+      return self._yorick.getvar(name)
+
 class _YorickRef:
   """Reference to a yorick variable, created by interface object."""
-  def __init__(self, connection, flike, name):
+  def __init__(self, connection, reftype, name):
     self.yorick = connection
-    self.flike = flike
+    self.reftype = reftype
     self.name = name
+
   def __repr__(self):
-    flag = "function-like" if self.flike else "subroutine-like"
+    flag = ["as subroutine", "as function", "python semantics"][self._reftype]
     return "<yorick variable {0} ({1}), pid={2}>".format(self.name, flag,
                                                          self.yorick.pid)
   def __call__(self, *args, **kwargs):   # ref(arglist)
-    if self.flike:
+    if self.reftype == 1:
       return self.yorick.funcall(self.name, *args, **kwargs)
     else:
       self.yorick.subcall(self.name, *args, **kwargs)
+
   def __setitem__(self, key, value):     # ref[key] = value
-    self.yorick.setslice(self.flike, self.name, key, value)
+    self.yorick.setslice(self.reftype, self.name, key, value)
+
   def __getitem__(self, key):            # ref[key]
-    return self.yorick.getslice(self.flike, self.name, key)
+    return self.yorick.getslice(self.reftype, self.name, key)
+
+  def info(self):                        # ref.info()
+    return self.yorick.getshape(self.name)
+
+  def y():
+    return _YorickRef(self.yorick, 1, self.name)
+
+  def p():
+    return _YorickRef(self.yorick, 2, self.name)
 
 # numpy dtype to C-type correspondence
 # C-types: char short int  long longlong float  double longdouble
@@ -928,7 +945,7 @@ def _decode(msg):
   elif ident == _ID_SLICE:
     flags = msg['hdr'][1]
     if flags == 7:
-      value = NewAxis  # or np.newaxis ??
+      value = new_axis  # or np.newaxis ??
     elif flags == 11:
       value = Ellipsis
     else:
@@ -1033,7 +1050,7 @@ def _encode(x):
                                   dtype=np.uint8)}
 
   # index range, including (newaxis, Ellipsis) <--> (-, ..)
-  elif x is NewAxis:  # np.newaxis is unfortunately None
+  elif isinstance(x, _NewAxis):  # np.newaxis is unfortunately None
     msg = {'_pyorick_id': _ID_SLICE,
            'hdr': np.array([_ID_SLICE, 7], dtype=_py_long),
            'value': np.array([0, 0, 1], dtype=_py_long)}

@@ -9,13 +9,14 @@ def pytest(test=None, ypath="yorick", ipath="pyorick.i"):
   # calling yorick() again gives you an equivalent handle pair, referring
   # to the existing connection if yorick is already running.
   yo, oy = yorick(ypath=ypath, ipath=ipath)
+  yc = yo._yorick
   if test:
-    yo._yorick.setdebug(1)
+    yc.setdebug(1)
 
   svals = [65, 6.5, 0.+6.5j, bytearray(b'B'), np.array(65, dtype=np.short),
            np.array(65, dtype=np.intc), np.array(6.5, dtype=np.single),
            'test string', '',
-           slice(1,5,2), Ellipsis, NewAxis, None]
+           slice(1,5,2), Ellipsis, new_axis, None]
   if test==1 or not test:
     for v in svals:
       yo.sval = v
@@ -91,7 +92,7 @@ def pytest(test=None, ypath="yorick", ipath="pyorick.i"):
     x = oy.where(yo.y)
     if len(x)!=2 or any(x != [1, 3]):
       raise PYorickError("function call failed")
-    yo("""
+    yc("""
 func test(a, b=) {
   return a-b;
 }

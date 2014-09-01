@@ -455,10 +455,22 @@ func _pyorick_decode(msg)
 func _pyorick_shape(a)
 {
   id = where(_pyorick_type(*,) == typeof(a));
-  if (numberof(id))
+  if (numberof(id)) {
     id = grow(id-1, dimsof(a));
-  else
-    id = is_func(a)? -1 : -2;
+  } else if (is_func(a)) {
+    id = -1;
+  } else if (is_obj(a)) {
+    names = value(*,);
+    id = noneof(names)? -2 : (allof(names)? -3 : -8);
+  } else if (is_range(a)) {
+    id = -4;
+  } else if (is_void(a)) {
+    id = -5;
+  } else if (is_stream(a)) {
+    id = -6;
+  } else {
+    id = -7;
+  }
   return id;
 }
 
