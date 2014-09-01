@@ -819,7 +819,7 @@ class _YorickRef:
     self.name = name
 
   def __repr__(self):
-    flag = ["as subroutine", "as function", "python semantics"][self._reftype]
+    flag = ["as subroutine", "as function", "python semantics"][self.reftype]
     return "<yorick variable {0} ({1}), pid={2}>".format(self.name, flag,
                                                          self.yorick.pid)
   def __call__(self, *args, **kwargs):   # ref(arglist)
