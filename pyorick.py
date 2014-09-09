@@ -215,7 +215,7 @@ def yorick(args="", ypath="yorick", ipath="pyorick.i", batch=False):
   return (y.v, y.r)
 
 # Manage the actual connection to a yorick process.
-class Yorick:
+class Yorick(object):
   """Manage connection to a yorick process."""
   def __init__(self, args="", ypath="yorick", ipath="pyorick.i", batch=False):
     """Construct a yorick interface object.
@@ -439,14 +439,13 @@ class Yorick:
         if m['hdr'][0] != 3:
           PYorickError("unexpected reply to _ID_GETSHAPE request")
         result = (None, None)
-        shape = msg['value'].tolist()
+        shape = m['value'].tolist()
         if isinstance(shape, list):
           if shape[0] == _ID_STRING:
             result[0] = 1
           else:
             result[0] = _types[shape[0]].type
-          result['ndim'] = shape[1]
-          result['shape'] = tuple(shape[2:][::-1])
+          result[1] = tuple(shape[shape[1]:1:-1])
         else:
           result[0] = 1 - shape
         # result[0] is type if numeric, else
@@ -758,7 +757,7 @@ class PYorickError(Exception):
   """Exception raised by pyorick module."""
   pass
 
-class _NewAxis:
+class _NewAxis(object):
   pass
 new_axis = _NewAxis()
 
@@ -773,7 +772,7 @@ new_axis = _NewAxis()
 # reftype = 0   by value
 # reftype = 1   by reference
 # reftype = 2   by reference, python index semantics
-class _YorickSugar:
+class _YorickSugar(object):
   def __init__(self, connection, reftype):
     self.__dict__['_reftype'] = reftype  # self._reftype calls __setattr__
     self.__dict__['_yorick'] = connection
@@ -811,7 +810,7 @@ class _YorickSugar:
     else:
       return self._yorick.getvar(name)
 
-class _YorickRef:
+class _YorickRef(object):
   """Reference to a yorick variable, created by interface object."""
   def __init__(self, connection, reftype, name):
     self.yorick = connection

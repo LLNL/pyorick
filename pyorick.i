@@ -460,7 +460,7 @@ func _pyorick_shape(a)
   } else if (is_func(a)) {
     id = -1;
   } else if (is_obj(a)) {
-    names = value(*,);
+    names = a(*,);
     id = noneof(names)? -2 : (allof(names)? -3 : -8);
   } else if (is_range(a)) {
     id = -4;
