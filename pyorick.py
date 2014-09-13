@@ -1185,7 +1185,7 @@ def _yorick_create(yorick_command, argv, args):
   termios.tcsetattr(pfd, termios.TCSANOW, t)
   return rfd, wfd, pfd, pid
 
-# See PEP 443.  After about Python 3.3, pipes are close-on-exec by default.
+# See PEP 433.  After about Python 3.3, pipes are close-on-exec by default.
 def _inheritable_pipe(side):
   p = os.pipe()
   if hasattr(fcntl, 'F_SETFD') and hasattr(fcntl, 'FD_CLOEXEC'):
