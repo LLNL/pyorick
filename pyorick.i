@@ -124,8 +124,9 @@ func py(command, ..)
 _ID_STRING = 16;   // yorick assumes iso_8859_1, need separate id for utf-8?
 _ID_SLICE = 17;
 _ID_NIL = 18;
-_ID_GROUP = 19;
-_ID_EOL = 20;
+_ID_LST = 19;
+_ID_DCT = 20;
+_ID_EOL = 21;
 /* active messages (passive response required): */
 _ID_EVAL = 32;
 _ID_EXEC = 33;
@@ -181,8 +182,8 @@ func _pyorick_send(x) { return fd_write(_pyorick_wfd, x); }
  *    whole connection must shut down.
  *    A complete message (called msg in the code) is an oxy object; it
  *    may contain a list of quoted messages in the case of the passive
- *    GROUP message, or the active messages which have argument or index
- *    lists (FUNCALL, SUBCALL, GETSLICE, SETSLICE).
+ *    LST/DCT messages, or the active messages which have argument or
+ *    index lists (FUNCALL, SUBCALL, GETSLICE, SETSLICE).
  * _pyorick_action
  *    Thin wrapper over _pyorick_unparse to interpret active message.
  * _pyorick_unparse
@@ -192,7 +193,7 @@ func _pyorick_send(x) { return fd_write(_pyorick_wfd, x); }
  *    by this text.
  * _pyorick_decode
  *    Decode passive messages from the uninterpreted form returned by
- *    _pyorick_get.  Most of the work is for string array and group objects.
+ *    _pyorick_get.  Most of the work is for string array and lst/dct objects.
  * _pyorick_setslice
  *    The SETSLICE active message needs this special helper function.
  * _pyorick_encode
@@ -301,7 +302,7 @@ func _pyorick_get(void)
     save, msg, flag = hdr(2), value = _pyorick_recv([0, 0, 0]);
   } else if (id == _ID_NIL) {
     save, msg, value = [];
-  } else if (id == _ID_GROUP) {
+  } else if (anyof(id == [_ID_LST, _ID_DCT])) {
     save, msg, value = _pyorick_getlist();
   } else if (id == _ID_EOL) {
     save, msg, flag = hdr(2);
@@ -428,8 +429,8 @@ func _pyorick_decode(msg)
     return rangeof([msg(value,1), msg(value,2), msg(value,3), msg(hdr,2)])
   } else if (id == _ID_NIL) {
     return [];
-  } else if (id == _ID_GROUP) {
-    named = msg(hdr, 2);
+  } else if (anyof(id == [_ID_LST, _ID_DCT])) {
+    named = (id == _ID_DCT);
     m = msg(value);
     value = save();
     for (i=1,n=m(*) ; i<=n ; ++i) {
@@ -442,7 +443,7 @@ func _pyorick_decode(msg)
       } else {
         name = string(0);
       }
-      if (mi._pyorick_id > _ID_GROUP)
+      if (mi._pyorick_id > _ID_DCT)
         error, "illegal member in dict or list object";
       save, value, noop(name), _pyorick_decode(mi);
     }
@@ -547,8 +548,9 @@ func _pyorick_encode(value)
       named = allof(names);
       if (!named && anyof(names))
         error, "oxy object members must be all named or all anonymous";
+      id = (named? _ID_DCT : _ID_LST);
       v = save();
-      msg = save(_pyorick_id=_ID_GROUP, hdr=[_ID_GROUP,named], value=v);
+      msg = save(_pyorick_id=id, hdr=[id, 0], value=v);
       n = numberof(names);
       if (named) {
         for (i=1 ; i<=n ; ++i) {
@@ -595,7 +597,7 @@ func _pyorick_put(msg)
     _pyorick_send, msg(value);
   } else if (id == _ID_NIL) {
     /* hdr only */
-  } else if (id == _ID_GROUP) {
+  } else if (id == _ID_LST || id == _ID_DCT) {
     _pyorick_putlist, msg(value);
   } else if (id == _ID_EOL) {
     /* hdr only */

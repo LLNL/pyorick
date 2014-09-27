@@ -1,173 +1,34 @@
-# pyorick.py
-
 """Interface to yorick as a subprocess.
 
-yo = Yorick()              start and connect to yorick
-yo.kill()                  stop yorick (automatic if yo deleted)
-yo("code")                 parse and execute yorick code, return None
-yo("=expr")                parse and execute yorick expression, return value
-  yo("pyformat", arg1, ...)  means yo("pyformat".format(arg1, ...))
-yo.v.varname               return value of yorick variable, like yo("=varname")
-yo.v.varname = <expr>      set value of yorick variable varname to <expr>
-yo.r.varname               return reference to yorick variable
-yo.r.varname = <expr>      same as yo.v.varname=<expr>
-yo.v.subname(arg1, ..., key1=k1, ...)  invoke yorick subname as subroutine
-yo.r.funname(arg1, ..., key1=k1, ...)  return value of yorick function funname
-yo.v("code")               same as yo("code")
-yo.r("expr")               same as yo("=expr")
-yo.r.aryname[ndx1, ...]    return slice of yorick aryname
-yo.r.aryname[ndx1, ...] = <expr>    set slice of yorick aryname to <expr>
-type, shape = yo.r.varname.info()   return type and shape for yorick varname
+yp = Yorick()      start a yorick process
+yp.kill()          kill a yorick process (like kill -9)
 
-yo()                       enter yorick terminal mode
-  py  (yorick command)     from yorick terminal mode returns to python
-  py, "code"               from yorick terminal mode to exec code in python
-  py("expr")               from yorick terminal mode to eval expr in python
+yo = yp.call       return call by default handle
+oy = yp.eval       return eval by default handle
+yo, oy = yp.handles()
+yn = yp.now        return immediate handle
+yp = yo._yorick    return Yorick() instance, also oy._yorick, yn._yorick
 
-The slice indices use yorick indexing semantics (fastest varying index first,
-1-origin, slice max non-inclusive).  To get python indexing semantics, use
-the alternate reference attribute p:
-  yo.p.aryname[ndx1, ...]
-  yo.p.aryname[ndx1, ...] = <expr>
-Beginning with either the r attribute form or the p attribute form, you can
-specify the indexing semantics explicitly (for either getting or setting
-the slice) like this:
-  yo.r.aryname.p()[ndx1, ...]   same as yo.p.aryname[ndx1, ...]
-  yo.p.aryname.y()[ndx1, ...]   same as yo.r.aryname[ndx1, ...]
+yp("code")         execute code in yorick, return None
+yo("code")         execute code in yorick, return None, same with oy, yn
 
-The yo.v.subname(args) form first causes yorick to return yo.v.subname
-as a reference, since subroutines, file handles, and the like cannot
-be transferred.  To avoid that initial round trip, but still get a
-subroutine call, use yo.p.subname(args) instead.
+yo.varname         call-like reference to yorick variable varname
+yo.varname()       return value of yorick varname
+yo.fname(arg1, arg2, ..., key1=karg1, ...)  invoke fname as subroutine
+yo.varname = expr  set value of yorick variable varname, same with oy, yn
+yo.varname.eval    same as oy.varname
+type, shape = yo.varname.info   return information about varname
 
-The <expr> transferred to yorick, and the values returned by yorick,
-may be any yorick array data type except pointers and struct instances
-(that is, string or any number).  On the python side, the numbers are
-numpy ndarray instances, while string arrays are nested lists.  Nested
-lists of numbers as an <expr> will be converted to an ndarray.  The
-expressions may also include arbitrary lists of these primary array
-objects, which map to oxy objects with anonymous members on the yorick
-side, or dict objects with string keys, which map to oxy objects with
-named members on the yorick side.
+oy.varname         eval-like reference to yorick variable varname
+yo.varname()       return value of yorick varname
+oy.fname(arg1, arg2, ..., key1=karg1, ...)  invoke fname as function
+oy.aname[index1, index2, ...]         return slice of array aname
+oy.aname[index1, index2, ...] = expr  set slice of array aname
+oy.varname.call    same as yo.varname
 
-Also:
-yo.setdebug(1)   turns on debugging output, 0 turns off (default)
-yo.setmode(0)    turns off interactive mode, 1 turns on (default)
+yn.varname         return value of yorick variable varname
+  if varname not data (e.g.- function), same as yo.varname
 """
-
-# pyorick implements a request-reply message passing model:
-# Python sends a request message, yorick sends a reply message.  Request
-# messages are also called "active"; reply messages are also called "passive".
-#
-# - Each message must be sent or received atomically; any failures due
-#   to a noisy channel or other interruption are fatal because the
-#   state of the partner becomes unknown.
-#
-# - Between message pairs, yorick blocks waiting for the next request,
-#   while the python program or interactive session continues.
-#   - However, in the default interactive mode, we arrange for yorick to be
-#     blocked waiting for stdin, rather than the request channel.  This
-#     yorick free to respond to events on other channels, such as graphics
-#     window input.
-#   - An optional batch mode works by installing a yorick idler function.
-#     Yorick graphics windows and stdin are both non-responsive in batch mode.
-#
-# - Yorick (or the side receiving a request message in general) guarantees
-#   prompt attention to request messages, sending the reply as soon as
-#   it finishes processing the request.  The protocol defines an error
-#   reply, delivered immediately upon the failure of the request.
-#
-# - Python (or the side sending a request message in general) blocks
-#   waiting for the reply.
-#
-# - Each message begins with two C-long values [ident, info] where ident
-#   identifies the type of message, and info provides more information about
-#   the following parts of the message.  Messages may appear "quoted" as
-#   part of another message.  Such quoted messages lose their stand-alone
-#   meaning (including whether they are active or passive) when quoted;
-#   they are merely part of the containing message.
-#
-# - The reply (passive) messages are:
-#
-#   ident  info
-#    0-4   ndim   integer array of C-type  char, short, int, long, long long
-#    5-7   ndim   floating array of C-type  float, double, long double
-#   8-12   ndim   unsigned array of C-type char, short, int, long, long long
-#  13-15   ndim   complex array based on C-type float, double, long double
-#    16    ndim   array of 0-terminated strings
-#   For all the array types, the header is followed by ndim long values:
-#      [len1, len2, len3, ...]
-#   where lenN is the length of the Nth dimension, and len1 varies fastest
-#   (that is, dimensions are always expressed in yorick order).
-#   For the numeric types, product(lenN) values of the specified C-type
-#   follow the dimension list, completing the message.
-#   For the string type, product(lenN) long values slen1, slen2, ... slenM,
-#   representing the individual string lengths in bytes, including a trailing
-#   '\0' byte for each string.  Any of the slenM may also equal 0 to indicate
-#   the NULL string (in yorick -- python has no such string value).  Strings
-#   are always encoded as ISO-8859-1, with a single byte per character,
-#   which is the yorick string format.  Immediately after the string lengths
-#   come sum(slenM) chars, all the strings concatenated together.
-#
-#   ident  info
-#    17    flags   a slice, header is followed by [start, stop, step]
-#          flags specify default values for start or stop,
-#                and any yorick range function sum, psum, -, .., *, etc.
-#    18     0      nil ([] in yorick, None in python)
-#    19    flag    group of objects with types 0-19
-#          flag =0 if group is python list, =1 if group is python dict with
-#                  string-valued keys (both yorick oxy objects)
-#                  - list of quoted messages follow representing items
-#                  - for flag=1, all item messages are SETVAR to specify key
-#    20    flag    special value marker
-#          flag =0 end-of-list marker,
-#               =1 to indicate error,
-#               =2 to indicate an _ID_GETVAR request produced an object that
-#                  cannot be represented in a reply message (e.g.- a function)
-#
-# - The request (active) messages are:
-#
-#   ident  info
-#    32    nchars   EVAL, following nchars chars are yorick expression
-#    33    nchars   EXEC, following nchars chars are yorick code
-#                   - EVAL reply is expression value, EXEC reply is None
-#                   - may consist of multiple lines separated by '\0' or '\n'
-#    34    nchars   GETVAR, following nchars chars are yorick variable name
-#                   - reply is variable value
-#    35    nchars   SETVAR, following nchars chars are yorick variable name,
-#                   then quoted message 0-19 or FUNCALL or GETSLICE is value
-#                   - reply is None
-#    36    nchars   FUNCALL, following nchars chars are yorick variable name
-#                   followed by list of quoted messages representing arguments
-#                   - arguments can be message 0-19 or FUNCALL or GETSLICE,
-#                     or GETVAR to represent a yorick variable, or SETVAR
-#                     to represent a keyword argument
-#                   - reply is variable value
-#    37    nchars   SUBCALL, following nchars chars are yorick variable name,
-#                   followed by list of quoted messages representing arguments
-#                   - arguments same as for FUNCALL
-#                   - reply is None
-#    38    nchars   GETSLICE, following nchars chars are yorick variable name,
-#                   followed by list of quoted messages representing indices
-#                   - indices can be message 0-19 or FUNCALL or GETSLICE,
-#                     or GETVAR to represent a yorick variable
-#                   - yorick index order and slice semantics assumed
-#                   - reply is slice value
-#    39    nchars   SETSLICE, following nchars chars are yorick variable name,
-#                   followed by list of quoted messages representing indices,
-#                   followed by final message representing value
-#                   - indices and value can be message 0-19 or FUNCALL or
-#                     GETSLICE, or GETVAR to represent a yorick variable
-#                   - yorick index order and slice semantics assumed
-#                   - reply is None
-#    40    nchars   GETSHAPE, following nchars chars are yorick variable name
-#                   - reply is {'dtype':dtype, 'ndim':ndim, 'shape':shape}
-#                     of the ndarray GETVAR would return
-#                     If the variable is a string array, 'dtype':None and
-#                     the dict reply has item 'string':True.
-#                     For all other cases, 'dtype', 'ndim' and 'shape' are
-#                     all None.  If the variable is a function, the dict reply
-#                     has item 'func':True.
 
 # Attempt to make it work for both python 2.6+ and python 3.x.
 # Avoid both six and future modules, which are often not installed.
@@ -197,536 +58,780 @@ import termios
 import fcntl
 import select
 from numbers import Number
-from collections import Sequence
-from ctypes import c_byte, c_ubyte, c_short, c_ushort, c_int, c_uint,\
-                   c_long, c_ulong, c_longlong, c_ulonglong,\
-                   c_float, c_double, c_longdouble
+from collections import Sequence, Mapping
+from ctypes import (c_byte, c_ubyte, c_short, c_ushort, c_int, c_uint,
+                    c_long, c_ulong, c_longlong, c_ulonglong,
+                    c_float, c_double, c_longdouble, sizeof)
 
-def yorick(args="", ypath="yorick", ipath="pyorick.i", batch=False):
-  """Return (yo,oy) pair of yorick interface objects.
+########################################################################
 
-  Optional parameters:
-  args      (default "") additional yorick command line arguments
-  ypath     (default "yorick") path to yorick executable
-  ipath     (default "pyorick.i") path to pyorick.i startup script
-  batch     (default False) true to start yorick in batch mode
-  """
-  y = Yorick(args, ypath, ipath, batch)
-  return (y.v, y.r)
-
-# Manage the actual connection to a yorick process.
 class Yorick(object):
-  """Manage connection to a yorick process."""
-  def __init__(self, args="", ypath="yorick", ipath="pyorick.i", batch=False):
-    """Construct a yorick interface object.
+  pass
 
-    Starts yorick as a subprocess with two pipes, one for python
-    to yorick, and one for yorick to python messages.  The yorick
-    stdin, stdout, and stderr streams are captured as a pty-tty,
-    but are unused for exchanging data or commands.  The interface
-    objects manage data and commands flowing through the pipes.
+# expose this to allow user to catch pyorick exceptions
+class PYorickError(Exception):
+  pass
 
-    Optional arguments:
-    args   Arguments to add to yorick command line, parsed by shlex.split.
-           Default: ""
-    ypath  Path to yorick executable.  Mostly useful for debugging.
-           Default: "yorick"
-    ipath  Path to pyorick.i yorick startup code.  Mostly useful for debugging.
-           Default: "pyorick.i"
-    batch  True to start yorick with -batch (instead of -i).
-           Default: False
-    """
-    self.batch = bool(batch)
-    if batch:
-      argv = [ypath, "-batch", ipath]
+# np.newaxis is None, which is [] in yorick, not -
+# ynewaxis provides a means for specifying yorick - in get/setslice
+class NewAxis(object):
+  pass
+ynewaxis = NewAxis()
+
+# yorick distinguishes string(0) from an empty string; python does not
+# provide an empty string which can be used to pass string(0) to yorick,
+# but still works like an empty string in python
+class YString0(str):
+  pass
+ystring0 = YString0()
+
+########################################################################
+
+class Message(object):
+  """Message to or from yorick in raw protocol-wire form.
+
+     msg = Message(msgid, arglist)  for active messages
+     msg = Message(None, value)     for data messages
+     msg = Message()                for an empty message, to call encoder
+     packetlist = msg.encoder()     return generator to receive from process
+     value = msg.decode()           return value of msg built by packetlist
+  """
+  """
+  A message is a list of packets, where each packet is an ndarray.
+
+  Messages must be sent and received atomically, which is why they are
+  marshalled in a Message instance in the raw format, so that none of
+  the encode or decode logic, which may raise formatting exceptions,
+  is interspersed with the sending or receiving.
+
+  Constructor:
+      Encode active message, where msgid is ID_EVAL, ID_EXEC, etc.,
+      and the argument list depends on which message:
+    msg = Message(ID_EVAL, 'yorick expression')
+    msg = Message(ID_EXEC, 'yorick code')
+    msg = Message(ID_GETVAR, 'varname')
+    msg = Message(ID_SETVAR, 'varname', value)
+    msg = Message(ID_FUN/SUBCALL, 'fname', arg1, arg2, ..., key1=k1, ...)
+    msg = Message(ID_GETSLICE, 'aname', index1, index2, ...)
+    msg = Message(ID_SETSLICE, 'aname', index1, index2, ..., value)
+    msg = Message(ID_GETSHAPE, 'varname')
+      Passive EOL end-of-list message:
+    msg = Message(ID_EOL, flag)              flag defaults to 0
+      Data messages ordinarily created using Message(None, value):
+    msg = Message(ID_LST/DCT, list or dict)
+    msg = Message(ID_NIL)
+    msg = Message(ID_SLICE, flags, start, stop, step)
+    msg = Message(ID_STRING, shape, lens, value)
+    msg = Message(0 thru 15, shape, value)   for numeric arrays
+
+  The encoder method returns a generator which can be used to build a
+  message starting from an empty message:
+    packetlist = msg.encoder()
+    for packet in packetlist:
+      read raw ndarray into packet, which has required dtype and shape
+  After this loop, msg.packets will contain the list of ndarrays.
+
+  The decode method converts msg.packets into a value if the message is
+  data.  Otherwise (for active messages or EOL) it produces a tuple
+  (msgid, args, kwargs) which could be passed to the Message constructor
+  to recreate the message.
+    value = msg.decode()
+    if isinstance(value, tuple):
+      this is an instruction (active message or ID_EOL)
     else:
-      argv = [ypath, "-q", "-i", ipath]
-    self.rfd, self.wfd, self.pfd, self.pid = _yorick_create(ypath, argv, args)
-    self.need_reply = False
-    self.debug = self.mode = self.mode_tmp = False
-    self.batch = bool(batch)
-    self.uses = 0
-    self.last_prompt = ''
-    if not batch:  # immediately switch to interactive mode
-      self.setmode(True)
-    # create the three flavors of _YorickSugar objects
-    self.v = _YorickSugar(self, 0)
-    self.r = _YorickSugar(self, 1)
-    self.p = _YorickSugar(self, 2)
+      this is data
+  """
+  def __init__(self, *args, *kwargs):
+    self.packets = []
+    if not args:
+      return None
+    msgid = args[0]
+    if msgid is None:
+      msgid, args, kwargs = self.encode_data(*args[1:])
+      codec.idtable[msgid].encoder(self, msgid, *args, **kwargs)
 
-  def __del__(self):
-    _yorick_destroy(self)
+  def encoder(self):
+    return codec.reader(self)
 
-  def __repr__(self):
-    return "<yorick process, pid={0}>".format(self.pid)
+  def decode(self):
+    if not self.packets:
+      PYorickError("cannot decode empty message")
+    self.pos = 1  # pos=0 already processed here
+    return codec.idtable[self.packets[0][0]].decoder(self)
 
-  def __call__(self, command=None, *args, **kwargs):  # pipe(command)
-    if args or kwargs:
-      command = command.format(*args, **kwargs)
-    if command is None:
-      self.termloop()
-    elif command[0:1] == '=':
-      return self.evaluate(command[2:])
+# Here is a pseudo-bnf description of the message grammar:
+#
+# message := narray     numeric array
+#          | sarray     string array, nested list in python
+#          | slice      array index selecting a subset
+#          | nil        [] in yorick, None in python
+#          | list       list in python, anonymous oxy object in yorick
+#          | dict       dict in python, oxy object in yorick
+#          | eol        end-of-list, variants used for other purposes
+#          | eval       parse text and return expression value
+#          | exec       parse text and execute code, no return value
+#          | getvar     return variable value
+#          | setvar     set variable value
+#          | funcall    invoke function, returning value
+#          | subcall    invoke function as subroutine, no return value
+#          | getslice   return slice of array
+#          | setslice   set slice of array
+#          | getshape   return type and shape of array, but not value
+# narray := long[2]=(0..15, rank) shape data
+# sarray := long[2]=(16, rank) shape lens text
+# slice := long[2]=(17, flags) long[3]=(start, stop, step)
+# nil := long[2]=(18, 0)
+# list := long[2]=(19, 0) llist
+# dict := long[2]=(20, 0) dlist
+# eol := long[2]=(21, flags)
+# eval := long[2]=(32, textlen) text
+# exec := long[2]=(33, textlen) text
+# getvar := long[2]=(34, namelen) name
+# setvar := long[2]=(35, namelen) name value
+# funcall := long[2]=(36, namelen) name alist
+# subcall := long[2]=(37, namelen) name alist
+# getslice := long[2]=(38, namelen) name ilist
+# setslice := long[2]=(39, namelen) name llist value
+# getvar := long[2]=(40, namelen) name
+#
+# shape := long[rank]    nothing if rank=0
+# data := type[shape]
+# lens := long[shape]
+# text := char[textlen or sum(lens)]
+# llist := eol(0)
+#        | value llist
+# dlist := eol(0)
+#        | setvar llist
+# name := char[namelen]
+# value := narray | sarray | slice | nil | list | dict | getvar
+# alist := eol(0)
+#       := value alist
+#       := setvar alist
+
+# type numbers needed during execution of class codec definition
+# id 0-15 are numeric types:
+#    char short int long longlong   float double longdouble
+#    followed by unsigned (integer) or complex (floating) variants
+# passive messages (reply prohibited):
+ID_STRING, ID_SLICE, ID_NIL, ID_LST, ID_DCT, ID_EOL =\
+   16,        17,       18,     19,     20,     21
+# ID_STRING: yorick assumes iso_8859_1, need separate id for utf-8?
+
+# active messages (passive reply required):
+ID_EXEC, ID_EVAL, ID_GETVAR, ID_SETVAR, ID_FUNCALL, ID_SUBCALL =\
+   32,      33,      34,        35,        36,         37
+ID_GETSLICE, ID_SETSLICE, ID_GETSHAPE =\
+   38,          39,          40
+
+# Each instance of Clause represents a clause of the message grammar.
+# At minimum, the functions to build, encode, and decode that clause must
+# be defined.  These definitions are in codec below.
+# Clause primarily implements the decorators used to cleanly construct
+# codec.
+class Clause(object):
+  def __init__(self, idtable=None, *idlist):
+    self.idlist = idlist  # tuple of message ids if top level clause
+    for msgid in idlist:
+      idtable[i] = self
+
+  # The reader, encoder, and decoder are decorator functions for codec,
+  # which shadow themselves in each instance.
+  # Note that the shadow version is an ordinary function, not a method,
+  # implicitly @staticmethod.
+  # (Inspired by property setter and deleter decorators.)
+  def reader(self):
+    def add(func):
+      self.reader = func
+      return self
+    return add
+  def encoder(self):
+    def add(func):
+      self.encoder = func
+      return self
+    return add
+  def decoder(self):
+    def add(func):
+      self.decoder = func
+      return self
+    return add
+
+class codec:  # not really a class, just a convenient container
+  """Functions and tables to build, encode, and decode messages."""
+  # This collection of methods makes protocol flexible and extensible.
+  # To add new message type(s):
+  # 1. Choose a new msgid number(s), and a name for the top level clause.
+  # 2. name = Clause(msgid [, ident2, ident3, ...])
+  # 3. Write the reader, encoder, and decoder methods (see below).
+  # Note that the reader method is a generator function; the others
+  # are ordinary functions.  The first argument is always msg, the current
+  # message, which you may use as you like to store state information.
+  # The packets attribute of msg is the list of packets; each packet must
+  # be an ndarray.
+
+  # numeric protocol datatypes are C-types (byte is C char)
+  types = [c_byte, c_short, c_int, c_long, c_longlong,
+           c_float, c_double, c_longdouble,
+           c_ubyte, c_ushort, c_uint, c_ulong, c_ulonglong,
+           np.csingle, np.complex_, None]  # no portable complex long double
+  typesz = [sizeof(types[i]) for i in range(15)].append(0)
+  typesk = ['i']*5 + ['f']*3 + ['u']*5 + ['c']*2 + ['none']
+  typesk = [typesk[i]+str(typesz[i]) for i in range(16)]  # keys for typtab
+  # lookup table for msgid given typesk (computable from dtype)
+  typtab = [0, 1, 2, 4, 3, 5, 7, 6, 8, 9, 10, 12, 11, 13, 15, 14]
+  typtab = dict([[typesk[typtab[i]], typtab[i]] for i in range[16]])
+
+  # dict of top level clauses by key=message id
+  idtable = {}  # idtable[msgid] --> top level message handler for msgid
+
+  @staticmethod
+  def reader(msg):
+    if msg.packets:
+      PYorickError("attempt to read into non-empty message")
+    packets[0] = packet = nplongs(0, 0)
+    yield packet
+    codec.idtable[packet[0]].reader(msg)
+
+  narray = Clause(idtable, *ID_NUMERIC)
+  @narray.reader()
+  def narray(msg):
+    msgid, rank = msg.packets[-1]
+    shape = np.zeros(rank, dtype=c_long)
+    if rank > 0:
+      yield shape
+    value = np.zeros(shape, dtype=codec.types[msgid])
+    yield value
+  @narray.encoder()
+  def narray(msg, msgid, shape, value):
+    rank = len(shape)
+    msg.packets.append(nplongs(msgid, rank))
+    if rank:
+      msg.packets.append(shape)
+    msg.packets.append(value)
+  @narray.decoder()
+  def narray(msg):
+    pos = msg.pos
+    rank = msg.packets[pos-1][1]
+    if rank:
+      msg.pos = pos = pos+1
+    msg.pos += 1
+    return msg.packets[pos]
+
+  sarray = Clause(idtable, ID_STRING)
+  @sarray.reader()
+  def sarray(msg):
+    msgid, rank = msg.packets[-1]
+    shape = np.zeros(rank, dtype=c_long)
+    if rank > 0:
+      yield shape
+    value = np.zeros(shape, dtype=np.uint8)
+    yield value
+  @sarray.encoder()
+  def sarray(msg, msgid, shape, lens, value):
+    codec.narray.encoder(msg, ID_LONG, shape, lens)
+    if value.nbytes:
+      msg.packets.append(value)
+  @sarray.decoder()
+  def sarray(msg):
+    pos = msg.pos
+    rank = msg.packets[pos-1][1]
+    if rank:
+      msg.pos = pos = pos+1
+    msg.pos += 1
+    lens = msg.packets[pos]
+    if lens.sum():
+      pos = msg.pos
+      msg.pos += 1
+      value = msg.packets[pos]
     else:
-      return self.execute(command)
+      value = np.zeros(0, dtype=np.uint8)
+    return codec.decode_sarray(lens, value)  # as nested list
 
-  def check_live(self):
-    if self.pid is None:
-      raise PYorickError("no yorick connection")
+  slice = Clause(idtable, ID_SLICE)
+  @slice.reader()
+  def slice(msg):
+    packet = nplongs(0, 0, 0)
+    yield packet
+  @slice.encoder(msg)
+  def slice(msg, msgid, x, flags=None):
+    if not flags: 
+      if x.start is None:
+        smin, flags = 0, 1
+      else:
+        smin, flags = x.start, 0
+      if x.stop is None:
+        smax, flags = 0, flags+2
+      else:
+        smax = x.stop
+      if x.step is None:
+        sinc = (-1, 1)[flags or smin<=smax]
+      else:
+        sinc = x.step
+    else:
+      smin = smax = 0
+      sinc = 1
+    msg.packets.append(nplongs(msgid, flags))
+    msg.packets.append(nplongs(smin, smax, sinc))
+  @slice.decoder()
+  def slice(msg):
+    pos = msg.pos
+    flags = msg.packets[pos-1][1]
+    if flags == 7:
+      value = ynewaxis  # np.newaxis confused with nil
+    elif flags == 11:
+      value = Ellipsis
+    else:
+      value = msg.packets[pos].tolist()
+      if flags&1:
+        value[0] = None
+      if flags&2:
+        value[1] = None
+      value = slice(*value)
+    msg.pos += 1
+    return value
 
-  def kill(self):
-    _yorick_destroy(self)
-
-  def setdebug(self, on):
-    on = bool(on)
-    if on != self.debug:
-      self.execute("pydebug = {0}".format(int(on)))
-      self.debug = on
-
-  def setmode(self, mode):
-    mode = bool(mode)
-    if mode != self.mode:
-      if self.batch:
-        raise PYorickError("yorick started with -batch, no interactive mode")
-      self.flush()
-      self.mode_tmp = mode
-      self.subcall("pyorick", int(mode))
-
-  ########################################################################
-  # low level stdin, stdout operations
-  ########################################################################
-
-  def py2yor(self, s, nolf=None):
-    self.check_live()
-    if not nolf:
-      if not s.endswith('\n'):
-        s += '\n'
-    n = 0
-    while n < len(s):
-      try:
-        # Note: must guarantee that s representable as 8859 latin-1
-        n += os.write(self.pfd, s[n:].encode('iso_8859_1'))
-      except:
-        _yorick_destroy(self)
-        raise PYorickError("unable to write to yorick stdin, yorick killed")
-
-  def flush(self, clear=None):
-    if clear:
-      self.last_prompt = ''
-    s = ''
-    i = 0    # curiously hard to get reply promptly?
-    while self.pfd is not None and i < 3:
-      try:
-        p = select.select([self.pfd], [], [self.pfd], 0)
-      except:
-        p = ([], [], [self.pfd])
-      if p[0]:
-        try:
-          s += os.read(self.pfd, 16384).decode('iso_8859_1')
-        except:
-          p = (0, 0, 1)
-      if p[2]:
-        _yorick_destroy(self)
-      if not p[0]:
-        i += 1
-    if s:
-      # remove prompt in interactive (no idler) mode
-      if self.mode and s.endswith("> "):
-        i = s.rfind('\n') + 1  # 0 on failure
-        self.last_prompt = s[i:]
-        s = s[0:i]
-      if s:
-        print(s, end='')  # terminal newline already in s
-
-  def wait_for_prompt(self):
-    self.flush(1)
-    while not self.last_prompt:
-      p = select.select([self.pfd], [], [self.pfd])
-      self.flush()
-
-  ########################################################################
-  # active message senders
-  ########################################################################
-
-  def evaluate(self, command):
-    if not isinstance(command, basestring):
-      command = '\0'.join(command)  # convert sequence of lines to single line
-    msg = _encode_name(_ID_EVAL, command)
-    return self.get_reply(msg)
-
-  def execute(self, command):
-    if not isinstance(command, basestring):
-      command = '\0'.join(command)  # convert sequence of lines to single line
-    msg = _encode_name(_ID_EXEC, command)
-    return self.get_reply(msg)
-
-  def getvar(self, name, reftype=None):
-    msg = _encode_name(_ID_GETVAR, name)
-    if reftype is not None:
-      msg['reftype'] = reftype
-    return self.get_reply(msg)
-
-  def setvar(self, name, value, passive=None):
-    msg = _encode_name(_ID_SETVAR, name)
-    msg['value'] = _encode(value)
-    return self.get_reply(msg)
-
-  def funcall(self, name, *args, **kwargs):
-    return self._caller(_ID_FUNCALL, name, *args, **kwargs)
-
-  def subcall(self, name, *args, **kwargs):
-    x = self._caller(_ID_SUBCALL, name, *args, **kwargs)
+  nil = Clause(idtable, ID_NIL)
+  @nil.reader()
+  def nil(msg):
+    pass
+  @nil.encoder()
+  def nil(msg, msgid):
+    msg.packets.append(nplongs(msgid, 0))
+  @nil.decoder()
+  def nil(msg):
     return None
 
-  def _caller(self, ident, name, *args, **kwargs):
-    msg = _encode_name(ident, name)
-    v = [_encode(arg) for arg in args]
-    for key, value in _iteritems(kwargs):
-      m = _encode_name(_ID_SETVAR, key)
-      m['value'] = _encode(value)
-      v.append(m)
-    msg['args'] = v
-    return self.get_reply(msg)
+  lst = Clause(idtable, ID_LST)
+  @lst.reader()
+  def lst(msg):
+    for packet in codec.qmlist.reader(0):
+      yield packet
+  @lst.encoder()
+  def lst(msg, msgid, value):
+    msg.packets.append(nplongs(msgid, 0))
+    codec.qmlist.encoder(msg, 0, value, {})
+  @lst.decoder()
+  def lst(msg):
+    value = []
+    codec.qmlist.decoder(msg, 0, value)
+    return value
 
-  def getslice(self, reftype, name, key):
-    if not isinstance(key, tuple):  # single index case
-      key = (key,)
-    msg = _encode_name(_ID_GETSLICE, name)
-    msg['args'] = [_encode(arg) for arg in key]
-    if reftype != 1:
-      msg['args'] = _fix_index_list(msg['args'])
-    return self.get_reply(msg)
+  dct = Clause(idtable, ID_DCT)
+  @dct.reader()
+  def dct(msg):
+    for packet in codec.qmlist.reader(1):
+      yield packet
+  @dct.encoder()
+  def dct(msg, msgid, value):
+    msg.packets.append(nplongs(msgid, 0))
+    codec.qmlist.encoder(msg, 1, (), value)
+  @dct.decoder()
+  def dct(msg):
+    value = {}
+    codec.qmlist.decoder(msg, 1, None, value)
+    return value
 
-  def setslice(self, reftype, name, key, value):
-    if not isinstance(key, tuple):  # single index case
-      key = (key,)
-    msg = _encode_name(_ID_SETSLICE, name)
-    msg['args'] = [_encode(arg) for arg in key]
-    if reftype != 1:
-      msg['args'] = _fix_index_list(msg['args'])
-    msg['value'] = _encode(value)
-    return self.get_reply(msg)
+  eol = Clause(idtable, ID_EOL)
+  @eol.reader()
+  def eol(msg):
+    pass
+  @eol.encoder()
+  def eol(msg, flag=0):
+    msg.packets.append(nplongs(msgid, flag))
+  @eol.decoder()
+  def eol(msg):
+    return tuple(msg.packets[msg.pos-1].tolist().append({}))
 
-  def getshape(self, name):
-    msg = _encode_name(_ID_GETSHAPE, name)
-    return self.get_reply(msg)
+  eval = Clause(idtable, ID_EVAL, ID_EXEC)
+  @eval.reader()
+  def eval(msg):
+    packet = np.zeros(msg.packets[-1][1], dtype=np.uint8)
+    if packet.nbytes:
+      yield packet
+  @eval.encoder()
+  def eval(msg, msgid, text):
+    text = np.fromiter(text.encode('iso_8859_1'), dtype=np.uint8)
+    msg.packets.append(nplongs(msgid, len(text)))
+    msg.packets.append(text)
+  @eval.decoder()
+  def eval(msg):
+    pos = msg.pos
+    msg.pos += 1
+    text = msg.packets[pos].tostring().decode('iso_8859_1')
+    return (msg.packets[pos-1][0], (text,), {})
 
-  def get_reply(self, msg):
-    self.check_live()
-    if self.mode or self.debug:
-      self.flush()
-    if self.mode:  # have to send "here it comes" command through stdin
-      self.py2yor("pyorick;")
-      if self.debug:
-        print("P>get_reply sent pyorick command to stdin")
-    self.put_msg(msg)
-    self.mode = self.mode_tmp   # msg caused mode to change
-    m = self.get_msg()
-    if self.mode:
-      self.wait_for_prompt()
+  # same as eval, but may want to add name sanity checks someday
+  getvar = Clause(idtable, ID_GETVAR, ID_GETSHAPE)
+  @getvar.reader()
+  def getvar(msg):
+    packet = np.zeros(msg.packets[-1][1], dtype=np.uint8)
+    if packet.nbytes:
+      yield packet
+  @getvar.encoder()
+  def getvar(msg, msgid, name):
+    name = np.fromiter(name.encode('iso_8859_1'), dtype=np.uint8)
+    msg.packets.append(nplongs(msgid, len(name)))
+    msg.packets.append(name)
+  @getvar.decoder()
+  def getvar(msg):
+    pos = msg.pos
+    msg.pos += 1
+    text = msg.packets[pos].tostring().decode('iso_8859_1')
+    return (msg.packets[pos-1][0], (text,), {})
+
+  # same as eval, but may want to add name sanity checks someday
+  setvar = Clause(idtable, ID_SETVAR)
+  @setvar.reader()
+  def setvar(msg):
+    packet = np.zeros(msg.packets[-1][1], dtype=np.uint8)
+    if packet.nbytes:
+      yield packet
+    packet = nplongs(0, 0)
+    yield packet
+    msgid = msg.packets[-1][0]
+    if msgid not in codec.qmlist.allowed[0]:
+      raise PYorickError("illegal setvar value msgid in reader")
+    for packet in codec.idtable[msgid].reader(msg):
+      yield packet
+  @setvar.encoder()
+  def setvar(msg, msgid, name, value):
+    name = np.fromiter(name.encode('iso_8859_1'), dtype=np.uint8)
+    msg.packets.append(nplongs(msgid, len(name)))
+    msg.packets.append(name)
+    msgid, args, kwargs = self.encode_data(value)
+    if msgid not in codec.qmlist.allowed[0]:
+      raise PYorickError("illegal setvar value msgid in encoder")
+    codec.idtable[msgid].encoder(msg, msgid, *args, **kwargs)
+  @setvar.decoder()
+  def setvar(msg):
+    pos = msg.pos
+    msg.pos += 1
+    args = (msg.packets[pos].tostring().decode('iso_8859_1'),
+            codec.idtable[msg.packets[pos+1][0]].decoder(msg))
+    return (msg.packets[pos-1][0], args, {})
+
+  funcall = Clause(idtable, ID_FUNCALL, ID_SUBCALL)
+  @funcall.reader()
+  def funcall(msg):
+    getvar(msg)
+    codec.qmlist.reader(msg, 2)
+  @funcall.encoder()
+  def funcall(msg, msgid, name, *args, **kwargs):
+    getvar(msg, msgid, name)
+    codec.qmlist.encoder(msg, 2)
+  @funcall.decoder()
+  def funcall(msg):
+    pos = msg.pos
+    msg.pos += 1
+    text = msg.packets[pos].tostring().decode('iso_8859_1')
+    args = []
+    kwargs = {}
+    codec.qmlist.decoder(msg, 2, kind, args, kwargs)
+    return (msg.packets[pos-1][0], (text,)+tuple(args), kwargs)
+
+  getslice = Clause(idtable, ID_GETSLICE)
+  @getslice.reader()
+  def getslice(msg):
+    getvar(msg)
+    codec.qmlist.reader(msg, 0)
+  @getslice.encoder()
+  def getslice(msg, msgid, name, *args):
+    getvar(msg, msgid, name)
+    codec.qmlist.encoder(msg, 0)
+  @getslice.decoder()
+  def getslice(msg):
+    pos = msg.pos
+    msg.pos += 1
+    text = msg.packets[pos].tostring().decode('iso_8859_1')
+    args = []
+    codec.qmlist.decoder(msg, 0, kind, args, {})
+    return (msg.packets[pos-1][0], (text,)+tuple(args), kwargs)
+
+  setslice = Clause(idtable, ID_SETSLICE)
+  @setslice.reader()
+  def setslice(msg):
+    getvar(msg)
+    codec.qmlist.reader(msg, 0)
+  @setslice.encoder()
+  def setslice(msg, msgid, name, *args):
+    getvar(msg, msgid, name)
+    codec.qmlist.encoder(msg, 0)
+  @setslice.decoder()
+  def setslice(msg):
+    pos = msg.pos
+    msg.pos += 1
+    text = msg.packets[pos].tostring().decode('iso_8859_1')
+    args = []
+    codec.qmlist.decoder(msg, 0, kind, args, {})
+    value = codec.idtable[msg.packets[pos+1][0]].decoder(msg)
+    return (msg.packets[pos-1][0], (text,)+tuple(args)+(value,), {})
+
+  # eol terminated lists, qmlist means "quoted message list"
+  qmlist = Clause()
+  @qmlist.reader()
+  def qmlist(msg, kind):
+    allowed = codec.qmlist.allowed[kind]
+    while True:
+      packet = nplongs(0, 0)
+      yield packet
+      msgid = msg.packets[-1][0]
+      if msgid not in allowed:
+        if msgid!=ID_EOL or msg.packets[-1][1]:
+          raise PYorickError("illegal list element msgid")
+        break
+      for packet in codec.idtable[msgid].reader(msg):
+        yield packet
+  @qmlist.encoder()
+  def qmlist(msg, kind, args, kwargs):
+    allowed = codec.qmlist.allowed[kind]
+    for arg in args:
+      msgid, iargs, ikwargs = self.encode_data(value)
+      codec.idtable[msgid].encoder(msg, msgid, *iargs, **ikwargs)
+    for key in kwargs:
+      codec.setvar.encoder(msg, ID_SETVAR, key, kwargs[key])
+    msg.packets.append(codec.eol.encoder(msg))
+  @qmlist.decoder()
+  def qmlist(msg, kind, args, kwargs):
+    allowed = codec.qmlist.allowed[kind]
+    while True:
+      pos = msg.pos
+      msg.pos += 1
+      packet = packets[pos]
+      msgid = packet[0]
+      if msgid not in allowed:
+        if msgid!=ID_EOL or packet[1]:  # always caught by reader or encoder?
+          raise PYorickError("illegal list element msgid (BUG?)")
+        break
+      item = codec.idtable[msgid].decoder(msg)
+      if msgid == ID_SETVAR:
+        kwargs[item[1][0]] = item[1][1]  # dict[name] = value
+      else:
+        args.append(item)
+  # set allowed msgids for the various types of list (used by reader)
+  qmlist.allowed = [i for i in range(ID_EOL)].append(ID_GETVAR)
+  qmlist.allowed = [qmlist.allowed                     # llist
+                    [ID_SETVAR],                       # dlist
+                    qmlist.allowed.append(ID_SETVAR)]  # alist
+
+  @staticmethod
+  def decode_sarray(lens, value):
+    shape = lens.shape
+    if shape:
+      n = np.prod(shape)
     else:
-      self.flush()
-    ident = m['_pyorick_id']
-    if ident == _ID_EOL:
-      if m['hdr'][1]==2 and msg['_pyorick_id']==_ID_GETVAR:
-        # unrepresentable data gets variable reference
-        reftype = msg['reftype'] if 'reftype' in msg else 0
-        return _YorickRef(self, reftype, _bytes2str(msg['name']))
+      n = 1
+    # split value into 1D list of strings v
+    lens = ravel(lens)
+    i1 = np.cumsum(lens)
+    i0 = i1 - lens
+    i1 -= 1
+    v = []
+    for i in xrange(n):
+      if lens[i]:
+        v.append(value[i0[i]:i1[i]].tostring().decode('iso_8859_1'))
       else:
-        raise PYorickError("yorick reports error")
-    elif ident < _ID_EVAL:  # got required passive message
-      if msg['_pyorick_id']==_ID_GETSHAPE:
-        if m['hdr'][0] != 3:
-          PYorickError("unexpected reply to _ID_GETSHAPE request")
-        result = (None, None)
-        shape = m['value'].tolist()
-        if isinstance(shape, list):
-          if shape[0] == _ID_STRING:
-            result[0] = 1
-          else:
-            result[0] = _types[shape[0]].type
-          result[1] = tuple(shape[shape[1]:1:-1])
+        v.append(ystring0)
+    # reorganize v into nested lists for multidimensional arrays
+    ndim = len(shape)
+    for i in range(ndim-1):
+      m = shape[i]
+      v = [v[j:j+m] for j in xrange(0, n, m)]
+      n /= m
+    # handle scalar
+    if not ndim:
+      v = v[0]
+    return v
+
+  @staticmethod
+  def encode_sarray(shape, value):
+    # flatten the nested list
+    n = len(shape)
+    if n:
+      while n > 1:
+        n -= 1
+        v = []
+        for item in value:
+          v.extend(item)
+        value = v
+    else:
+      value = [value]
+    lens = []
+    for i in xrange(len(value)):
+      v = value[i]
+      if '\0' in v:
+        v = v[0:v.index('\0')+1]  # truncate after first NULL
+      else if not isinstance(v, YString0):
+        v += '\0'
+      v = v.encode('iso_8859_1')
+      lens.append(len(v))
+      value[i] = v
+    lens = np.array(lens, dtype=c_long).reshape(shape)
+    value = np.array(b''.join(value), dtype=uint8)
+    return (ID_STRING, (shape, lens, value), {})
+
+  # decode work done, but encode still needs to recogize python data
+  @staticmethod
+  def encode_data(value):   # return (msgid, args, kwargs)
+    msgid = -1  # unknown initially
+
+    if isinstance(value, Number):
+      value = np.array(value)
+
+    elif isinstance(value, bytearray):
+      value = np.frombuffer(value, dtype=np.uint8)
+
+    elif isinstance(value, basestring):
+      return codec.encode_sarray((), value)
+
+    elif isinstance(value, Sequence):   # check for array-like nested sequence
+      shape = []
+      v = value
+      while True:
+        shape.append(len(value))
+        v0 = v[0]
+        is isinstance(v0, Number):
+          if any(not isinstance(i, Number) for i in v[1:]):
+            break
+          msgid = 0
+          break
+        elif isinstance(v0, basestring):
+          if any(not isinstance(i, basestring) for i in v[1:]):
+            break
+          msgid = ID_STRING
+          return codec.encode_sarray(shape, value)
+        elif isinstance(v0, Sequence):
+          n = len(v0)
+          shape.append(n)
+          if any((not isinstance(i, Sequence)) or len(i)!=n for i in v[1:]):
+            break
         else:
-          result[0] = 1 - shape
-        # result[0] is type if numeric, else
-        # 1 string, 2 func, 3 list, 4 dict, 5 slice, 6 None
-        # 7 binary file, 8,9 other
-        return result
-      return _decode(m)
-    raise PYorickError("active reply from yorick not yet supported")
+          break
+      if msgid < 0:  # may raise errors later, but not array-like
+        return (ID_LST, (value), {})
+      # np.array converts nested list of numbers to ndarray
+      value = np.array(value)
 
-  ########################################################################
-  # yorick terminal mode
-  ########################################################################
+    # numeric arrays are the "money message"
+    if isinstance(value, np.ndarray):
+      shape = value.shape
+      k = str(value.dtype.kind)
+      if k in 'SUa':
+        return codec.encode_sarray(shape, value.tolist())
+      if k not in 'biufc':
+        raise PYorickError("cannot encode unsupported array item type")
+      if k == 'b':
+        k = 'u'
+      k += str(value.dtype.itemsize)
+      if k not in typtab:
+        PYorickError("cannot encode unsupported array numeric dtype")
+      msgid = typtab[k]
+      if not value.flags['CARRAY']:
+        value = np.copy(value, 'C')
+      return (msgid, (shape, value), {})
 
-  def process_request(self):
-    self.need_reply = True  # reverse normal sequence
-    msg = self.get_msg();
-    ident = msg['_pyorick_id']
-    if ident < _ID_EVAL:
-      # pause until handshake on terminal
-      while self.last_prompt != "ExitTerminalMode> ":
-        self.flush()
-      # send acknowledgement back to yorick
-      self.send(np.array([_ID_NIL, 0], dtype=_py_long))
-      self.need_reply = False  # next message will also be to yorick
-      return False
-    m = _err_reply
-    try:
-      if ident == _ID_EVAL or ident == _ID_EXEC:
-        mode = 'eval' if ident==_ID_EVAL else 'exec'
-        command = _bytes2str(msg['name']).replace('\0', '\n')
-        m = _encode(eval(compile(command, '<pyorick string>', mode), globals()))
-    finally:
-      self.put_msg(m)
-    return True
+    # index range, including (newaxis, Ellipsis) <--> (-, ..)
+    elif isinstance(value, NewAxis):  # np.newaxis is unfortunately None
+      return (ID_SLICE, (None, 7), {})
+    elif value is Ellipsis:
+      return (ID_SLICE, (None, 11), {})
+    elif isinstance(value, slice):
+      return (ID_SLICE, (value), {})
 
-  def wait_for_request(self):
-    while not self.last_prompt:
-      p = select.select([self.pfd, self.rfd], [], [self.pfd, self.rfd])
-      if self.rfd in p[0]:  # process any rfd input before terminal
-        return True
-      if self.pfd in p[0]:
-        self.flush()
-      if p[2]:
-        raise PYorickError("select error")
-    return False
+    elif value is None:
+      return (ID_NIL, (), {})
 
-  def termloop(self):
-    if not self.mode:
-      raise PYorickError("cannot enter yorick terminal mode from batch mode")
-    print("--> yorick prompt (type py to return to python):")
-    self.subcall("pyorick", -1)
-    # subcall get_reply already did wait_for_prompt
-    running = True
-    while running:
+    # dict objects only allowed if all keys are strings
+    elif isinstance(value, Mapping):
+      if not all(isinstance(key, basestring) for key in value):
+        raise PYorickError("cannot encode dict with non-string key")
+      return (ID_DCT, (value), {})
+
+    elif isinstance(value, YorickRef):
+      return (ID_GETVAR, (value.name), {})
+
+    else:
+      raise PYorickError("cannot encode unsupported data object")
+
+def nplongs(*args):
+  return np.array(args, dtype=c_long)
+
+########################################################################
+
+class Process:
+  def __init__(self, yorick_command, argv, args):
+    # complete argv will be:   argv rfd wfd args
+    ptoy = self.inheritable_pipe(0)
+    ytop = self.inheritable_pipe(1)
+    self.pid, self.pfd = os.forkpty()
+    # self.pid = os.fork()
+    if not self.pid:   # subprocess side
+      os.close(ptoy[1])
+      os.close(ytop[0])
+      argv.extend([str(ptoy[0]), str(ytop[1])])
+      if args:
+        argv.extend(shlex.split(args))
+      os.execvp(yorick_command, argv)
+      os._exit(1)            # failed to launch yorick
+    os.close(ptoy[0])
+    os.close(ytop[1])
+    self.rfd = ytop[0]
+    self.wfd = ptoy[1]
+    # set reasonable termios attributes
+    t = termios.tcgetattr(self.pfd)
+    t[3] = t[3] & ~termios.ECHO
+    termios.tcsetattr(self.pfd, termios.TCSANOW, t)
+
+  def __del__(self):
+    self.kill()
+
+  def kill(self):
+    if self.pid is not None:
       try:
-        self.py2yor(raw_input(self.last_prompt))
-        self.flush(1)
-        while self.wait_for_request():
-          running = self.process_request()
-      except KeyboardInterrupt:
-        self.last_prompt = ''
-        self.py2yor('\x03', True)  # send ctrl-c
-        self.wait_for_prompt()
-    self.wait_for_prompt()  # gobble prompt after acknowledgement
-    print("--> python prompt:")
-
-  ########################################################################
-  # high level binary pipe i/o
-  ########################################################################
-
-  # Since reading and writing need to be atomic operations, we implement
-  # no nonsense get_msg and put_msg methods that read or write a complete
-  # message.  No error checking or value decoding is done in get_msg, and
-  # put_msg expects all the encoding work, including error checking to
-  # already have been done.  The raw message format is simply a dict
-  # with several items depending on message type.  The passive GROUP
-  # message and several of the active messages contain a list of such
-  # dicts, corresponding to the GROUP members, function argument list,
-  # or array indices.
-  #
-  # value = _decode(msg) and msg = _encode(value) are the higher level
-  # functions which translate between python values and messages
-
-  def get_msg(self, restrict=None):
-    if not self.need_reply:
-      raise PYorickError("expecting to send message, not receive")
-    if not self.rfd:
-      return None   # some fatal exception has already occurred
-    die = 0
-    hdr = np.zeros(2, dtype=_py_long)
-    try:
-      if self.debug and not restrict:
-        print("P>get_msg: blocking to recv hdr")
-      self.recv(hdr)
-      if self.debug and not restrict:
-        print(("P>get_msg: got hdr = [{0},{1}]".format(hdr[0],hdr[1])))
-      ident = hdr[0]
-      msg = {'_pyorick_id': ident, 'hdr': hdr}
-
-      if ident<0 or (restrict and ident>_ID_EOL and (ident not in restrict)):
-        ident = 1000
-
-      # process passive messages first
-      if ident in _ID_YARRAY:   # array message
-        ndim = hdr[1]
-        if ndim:
-          shape = np.zeros(ndim, dtype=_py_long)
-          self.recv(shape)
-        else:
-          shape = np.array((), dtype=_py_long)
-        msg['shape'] = shape
-        if ident < _ID_STRING:
-          value = np.zeros(shape[::-1], dtype=_types[ident])
-        else:
-          lens = np.zeros(np.prod(shape) if ndim else 1, dtype=_py_long)
-          self.recv(lens)
-          msg['lens'] = lens
-          value = np.zeros(np.sum(lens), dtype=np.uint8)
-        self.recv(value)
-        msg['value'] = value
-
-      elif ident == _ID_SLICE:
-        value = np.zeros(3, dtype=_py_long)
-        self.recv(value)
-        msg['value'] = value
-
-      elif ident == _ID_NIL:
-        msg['value'] = None
-
-      elif ident == _ID_GROUP:
-        v = []
-        while True:   # go until matching EOL sub-message
-          m = self.get_msg([_ID_SETVAR])
-          if m['_pyorick_id'] == _ID_EOL:
-            break
-          v.append(m)
-        msg['value'] = v
-
-      elif ident == _ID_EOL:
-        msg['value'] = None
-
-      # remaining messages are active
-      elif ident in [_ID_EVAL, _ID_EXEC, _ID_GETVAR, _ID_SETVAR, _ID_GETSHAPE]:
-        if hdr[1]:
-          name = np.zeros(hdr[1], dtype=np.uint8)
-          self.recv(name)
-        else:
-          pkt.name = ''
-        msg['name'] = name
-        if ident == _ID_SETVAR:
-          msg['value'] = self.get_msg([_ID_GETVAR, _ID_FUNCALL, _ID_GETSLICE])
-
-      elif ident == _ID_SETVAR:
-        if hdr[1]:
-          name = np.zeros(hdr[1], dtype=np.uint8)
-          self.recv(name)
-        else:
-          pkt.name = ''
-        msg['name'] = name
-        msg['value'] = self.get_msg([_ID_GETVAR, _ID_FUNCALL, _ID_GETSLICE])
-
-      elif ident==_ID_FUNCALL or ident==_ID_SUBCALL:
-        if hdr[1]:
-          name = np.zeros(hdr[1], dtype=np.uint8)
-          self.recv(name)
-        else:
-          pkt.name = ''
-        msg['name'] = name
-        v = []
-        while True:   # go until matching EOL sub-message
-          m = self.get_msg([_ID_GETVAR, _ID_SETVAR, _ID_FUNCALL, _ID_GETSLICE])
-          if m['_pyorick_id'] == _ID_EOL:
-            break
-          v.append(m)
-        msg['args'] = v
-
-      elif ident==_ID_GETSLICE or ident==_ID_SETSLICE:
-        if hdr[1]:
-          name = np.zeros(hdr[1], dtype=np.uint8)
-          self.recv(name)
-        else:
-          pkt.name = ''
-        msg['name'] = name
-        v = []
-        while True:   # go until matching EOL sub-message
-          m = self.get_msg([_ID_GETVAR, _ID_FUNCALL, _ID_GETSLICE])
-          if m['_pyorick_id'] == _ID_EOL:
-            break
-          v.append(m)
-        msg['args'] = v
-        if ident == _ID_SETSLICE:
-          msg['value'] = self.get_msg([_ID_GETVAR, _ID_FUNCALL, _ID_GETSLICE])
-
-      else:
-        # panic on unrecognized or out-of-context message
-        die = 1
-
-      if restrict is None:
+        os.close(self.pfd)
+        os.close(self.rfd)
+        os.close(self.wfd)
+        os.waitpid(self.pid, 0)   # otherwise yorick becomes a zombie
+      finally:
+        self.pid = self.pfd = self.rfd = self.wfd = self.batch = None
+        self.debug = self.mode = self.mode_tmp = False
         self.need_reply = False
+
+  # See PEP 433.  After about Python 3.3, pipes are close-on-exec by default.
+  @staticmethod
+  def inheritable_pipe(side):
+    p = os.pipe()
+    if hasattr(fcntl, 'F_SETFD') and hasattr(fcntl, 'FD_CLOEXEC'):
+      flags = fcntl.fcntl(p[side], fcntl.F_GETFD)
+      flags &= ~fcntl.FD_CLOEXEC
+      fcntl.fcntl(p[side], fcntl.F_SETFD, flags)
+    return p
+
+  def reqrep(self, request, encoder):
+    try:  # send request
+      for packet in request:
+        self.send(packet)
     except:
-      # panic if interrupted for any reason during reading of the message
-      _yorick_destroy(self)
-      raise PYorickError("interrupted reading message, yorick killed")
-
-    if die:
-      _yorick_destroy(self)
-      if die == 1:
-        raise PYorickError("unrecognized message id, yorick killed")
-
-    if self.debug and not restrict:
-      print(("P>get_msg: completed hdr = [{0},{1}]".format(hdr[0],hdr[1])))
-    return msg
-
-  def put_msg(self, msg, recurse=None):
-    if self.need_reply:
-      msg = self.get_msg()   # read and ignore unexpected input
-      raise PYorickError("received and discarded message, now ready to send")
-    ident = msg['_pyorick_id']
-    if self.debug and not recurse:
-      print(("P>put_msg: hdr = [{0},{1}]...".format(msg['hdr'][0],
-                                                     msg['hdr'][1])))
-    try:
-      self.send(msg['hdr'])
-      if ident in _ID_YARRAY:
-        if len(msg['shape']):
-          self.send(msg['shape'])
-        if ident == _ID_STRING:
-          self.send(msg['lens'])
-        self.send(msg['value'])
-      elif ident == _ID_SLICE:
-        self.send(msg['value'])
-      elif ident == _ID_NIL:
-        pass
-      elif ident == _ID_GROUP:
-        v = msg['value']
-        for m in v:
-          self.put_msg(m, 1)
-        self.send(np.array([_ID_EOL, 0], dtype=_py_long))
-      elif ident == _ID_EOL:
-        pass
-
-      elif ident in [_ID_EVAL, _ID_EXEC, _ID_GETVAR, _ID_SETVAR, _ID_GETSHAPE]:
-        self.send(msg['name'])
-        if ident == _ID_SETVAR:
-          self.put_msg(msg['value'], 1)
-      elif ident in [_ID_FUNCALL, _ID_SUBCALL, _ID_GETSLICE, _ID_SETSLICE]:
-        self.send(msg['name'])
-        v = msg['args']
-        for m in v:
-          self.put_msg(m, 1)
-        self.send(np.array([_ID_EOL, 0], dtype=_py_long))
-        if ident == _ID_SETSLICE:
-          self.put_msg(msg['value'], 1)
-
-      if (not recurse) and (ident >= _ID_EVAL):
-        self.need_reply = True
+      self.kill()
+      raise PYorickError("failed to send complete message, yorick killed")
+    try:  # receive reply
+      for packet in encoder:
+        self.recv(packet)
     except:
-      _yorick_destroy(self)
-      raise PYorickError("interrupted writing message, yorick killed")
+      self.kill()
+      raise PYorickError("failed to receive complete message, yorick killed")
 
-    if self.debug and not recurse:
-      print(("P>put_msg: done hdr = [{0},{1}]".format(msg['hdr'][0],
-                                                     msg['hdr'][1])))
-
-  ########################################################################
-  # low level binary pipe i/o
-  ########################################################################
-
-  def recv(self, x):
-    """Read numpy array x from self.rfd."""
+  def recv(self, packet):
+    """Read numpy array packet from self.rfd."""
     # other interfaces are readinto, copyto, frombuffer, getbuffer
     if not self.rfd:
       return None   # some fatal exception has already occurred
-    # note: x.data[n:] fails in python 3.4 if x is scalar
-    xx = x.reshape(x.size).view(dtype=np.uint8)
+    # note: packet.data[n:] fails in python 3.4 if packet is scalar
+    xx = packet.reshape(packet.size).view(dtype=np.uint8)
     n = 0
-    while n < x.nbytes:
+    while n < packet.nbytes:
       try:
-        s = os.read(self.rfd, x.nbytes-n)  # no way to use readinto?
+        s = os.read(self.rfd, packet.nbytes-n)  # no way to use readinto?
       except:
-        _yorick_destroy(self)  # failure fatal, need to shut down yorick
+        self.kill()  # failure fatal, need to shut down yorick
         raise PYorickError("os.read failed, yorick killed")
       m = len(s)
       xx.data[n:n+m] = s  # fails in python 3.4 unless xx dtype=np.unit8
@@ -734,478 +839,32 @@ class Yorick(object):
     if self.debug and n:
       print(("P>recv: {0} bytes".format(n)))
 
-  def send(self, x):
-    """Write numpy array x to self.wfd."""
+  def send(self, packet):
+    """Write numpy array packet to self.wfd."""
     if not self.wfd:
       return None   # some fatal exception has already occurred
-    # note: x.data[n:] fails in python 3.4 if x is scalar
-    xx = x.reshape(x.size).view(dtype=np.uint8)
+    # note: packet.data[n:] fails in python 3.4 if packet is scalar
+    pp = packet.reshape(packet.size).view(dtype=np.uint8)
     n = 0
-    while n < x.nbytes:
+    while n < packet.nbytes:
       try:
-        m = os.write(self.wfd, xx.data[n:])
+        m = os.write(self.wfd, pp.data[n:])
       except:
         m = -1
       if m<0:
-        _yorick_destroy(self)  # failure fatal, need to shut down yorick
+        self.kill()  # failure fatal, need to shut down yorick
         raise PYorickError("os.write failed, yorick killed")
       n += m
     if self.debug and n:
       print(("P>send: {0} bytes sent".format(n)))
 
-class PYorickError(Exception):
-  """Exception raised by pyorick module."""
-  pass
+  def set_stdout(self, callback):
+    pass
 
-class _NewAxis(object):
-  pass
-new_axis = _NewAxis()
+  def interact(self, server):
+    pass
 
 ########################################################################
-# Remainder of module is unneeded by and hidden from users.
 
-# syntactic sugar for Yorick connection
-# - make attribute name (unquoted in python source!) correspond to
-#   yorick variable name
-# - every attribute except _yorick and _reftype represent yorick variables
-# come in 3 flavors:
-# reftype = 0   by value
-# reftype = 1   by reference
-# reftype = 2   by reference, python index semantics
-class _YorickSugar(object):
-  def __init__(self, connection, reftype):
-    self.__dict__['_reftype'] = reftype  # self._reftype calls __setattr__
-    self.__dict__['_yorick'] = connection
-
-  def __repr__(self):
-    s = "<yorick interface {0} to pid={1}>"
-    flag = ["by value", "by reference", "by reference (p-index)"][self._reftype]
-    return s.format(flag, self._yorick.pid)
-
-  def __call__(self, command=None, *args, **kwargs):  # pipe(command)
-    if args or kwargs:
-      command = command.format(*args, **kwargs)
-    if command is None:
-      self._yorick.termloop()
-    elif self._reftype:
-      return self._yorick.evaluate(command)
-    else:
-      return self._yorick.execute(command)
-
-  def __setattr__(self, name, value):            # pipe.name = value
-    if name not in self.__dict__:
-      self._yorick.setvar(name, value)
-    else:
-      object.__setattr__(self, name, value)
-
-  def __getattr__(self, name):                   # pipe.name
-    # inspect module causes serious problems by probing for names
-    # ipython also probes for getdoc attribute
-    if _is_sysattr(name) or name=='getdoc':
-      raise AttributeError("_YorickSugar instance has no attribute '"+name+"'")
-    if name in ['_reftype', '_yorick']:
-      return self.__dict__[name]
-    if self._reftype:
-      return _YorickRef(self._yorick, self._reftype, name)
-    else:
-      return self._yorick.getvar(name)
-
-class _YorickRef(object):
-  """Reference to a yorick variable, created by interface object."""
-  def __init__(self, connection, reftype, name):
-    self.yorick = connection
-    self.reftype = reftype
-    self.name = name
-
-  def __repr__(self):
-    flag = ["as subroutine", "as function", "python semantics"][self.reftype]
-    return "<yorick variable {0} ({1}), pid={2}>".format(self.name, flag,
-                                                         self.yorick.pid)
-  def __call__(self, *args, **kwargs):   # ref(arglist)
-    if self.reftype == 1:
-      return self.yorick.funcall(self.name, *args, **kwargs)
-    else:
-      self.yorick.subcall(self.name, *args, **kwargs)
-
-  def __setitem__(self, key, value):     # ref[key] = value
-    self.yorick.setslice(self.reftype, self.name, key, value)
-
-  def __getitem__(self, key):            # ref[key]
-    return self.yorick.getslice(self.reftype, self.name, key)
-
-  def info(self):                        # ref.info()
-    return self.yorick.getshape(self.name)
-
-  def y():
-    return _YorickRef(self.yorick, 1, self.name)
-
-  def p():
-    return _YorickRef(self.yorick, 2, self.name)
-
-# numpy dtype to C-type correspondence
-# C-types: char short int  long longlong float  double longdouble
-# dtypes:  byte short intc int_ longlong single double   <none?>
-#          unsigned: u prefix except uint instead of uint_
-#          complex: csingle (float) and complex_ (double)
-# Python types: int_ (long), float_ (double), complex_
-# - better to use ctypes module
-# - someday construct complex dtypes from ctypes floats?
-_types = [c_byte, c_short, c_int, c_long, c_longlong,
-          c_float, c_double, c_longdouble,
-          c_ubyte, c_ushort, c_uint, c_ulong, c_ulonglong,
-          np.csingle, np.complex_, None]
-_types = [(np.dtype(t) if t else None) for t in _types]
-_kinds = ['i']*5 + ['f']*3 + ['u']*5 + ['c']*3   # 'b' same as 'u' here
-# yorick does not support longlong unless it is same size as long
-if _types[4].itemsize > _types[3].itemsize:
-  _types[4] = _types[12] = None
-_sizes = [(t.itemsize if t is not None else None) for t in _types]
-_py_long = _types[3]
-
-# id 0-15 are numeric types:
-#    char short int long longlong   float double longdouble
-# followed by unsigned, complex variants
-# passive messages (reply prohibited):
-_ID_STRING = 16   # yorick assumes iso_8859_1, need separate id for utf-8?
-_ID_SLICE = 17
-_ID_NIL = 18
-_ID_GROUP = 19
-_ID_EOL = 20
-# active messages (passive reply required):
-_ID_EVAL = 32
-_ID_EXEC = 33
-_ID_GETVAR = 34
-_ID_SETVAR = 35
-_ID_FUNCALL = 36
-_ID_SUBCALL = 37
-_ID_GETSLICE = 38
-_ID_SETSLICE = 39
-_ID_GETSHAPE = 40
-
-_ID_INTEGER = [0, 1, 2, 3, 4] + [8, 9, 10, 11, 12]
-_ID_NUMERIC = [i for i in range(16)]
-_ID_YARRAY = [i for i in range(17)]
-_ID_ACTIVE = [i for i in range(_ID_EVAL, _ID_GETSHAPE+1)]
-
-_err_reply = {'_pyorick_id': _ID_EOL,
-              'hdr': np.array([_ID_EOL, 1], dtype=_py_long), 'value': None}
-
-# Numpy ndarrays have a dtype.kind = biufcSUV, meaning, respectively:
-#   boolean, signed integer, unsigned integer, floating point, complex,
-#   byte-string (b'...'), unicode (u'...'), and void (other object)
-# The non-numeric kinds generally group several items - characters for
-# S and U kinds - into each element of the ndarray, while the numeric kinds
-# always have one item per element (counting a complex pair as one item).
-#
-# Here, we must figure out which primitive C numerical type - to be precise,
-# which index into the _types array - corresponds to x.dtype.  The rules are:
-# 0. Non-numeric kinds SUV are an error.  Eventually we could support them
-#    by transferring as char or uchar raw data, with a leading dimension
-#    added for the byte size of an individual ndarray element.
-# 1. Kind i is a signed integer ctype, kinds b and u are unsigned integer
-#    ctypes, kind f is a floating ctype, and kind c is a pair of floating
-#    ctypes.
-# 2. The dtype.itemsize must exactly match the _types[i].itemsize.
-# 3. Among equal _types[i].itemsize, long is the preferred integer and
-#    double is the preferred floating type.  Otherwise, the type with the
-#    "smallest name" is preferred.
-# long is preferred integer type, double is preferred floating type
-_types_pref = [3, 0, 1, 2, 4, 6, 5, 7, 11, 8, 9, 10, 12, 14, 13, 15]
-_sizes_pref = [_sizes[i] for i in _types_pref]
-def _array_dtype(x):
-  k = x.dtype.kind
-  if k == 'b':
-    k = 'u'   # no distinction between 'b' and 'u' in protocol
-  szp = [(_sizes_pref[i] if _kinds[i]==k else 0) for i in xrange(16)]
-  n = x.dtype.itemsize
-  if n not in szp:
-    raise PYorickError("unsupported np.array dtype for pyorick")
-  return _types_pref[szp.index(n)]
-
-def _is_array_of(x, aclass):
-  if isinstance(x, aclass):
-    return (0,)
-  elif isinstance(x, Sequence) and len(x) and x.__class__!=x[0].__class__:
-    x0 = _is_array_of(x[0], aclass)
-    if x0 and all(_is_array_of(xx, aclass)==x0 for xx in x[1:]):
-      return (len(x),) + x0
-  return False
-
-# translate a passive value message (from _get_msg) to its python value
-def _decode(msg):
-  ident = msg['_pyorick_id']
-
-  if ident in _ID_NUMERIC:
-    value = msg['value']
-
-  elif ident == _ID_STRING:
-    value = _from_bytes(msg['shape'], msg['lens'], msg['value'])
-
-  elif ident == _ID_SLICE:
-    flags = msg['hdr'][1]
-    if flags == 7:
-      value = new_axis  # or np.newaxis ??
-    elif flags == 11:
-      value = Ellipsis
-    else:
-      value = msg['value']
-      value = slice(None if (flags&1) else value[0],
-                    None if (flags&2) else value[1], value[2])
-
-  elif ident == _ID_NIL:
-    value = None
-
-  elif ident == _ID_GROUP:
-    v = msg['value']
-    if msg['hdr'][1]:
-      value = {}
-      for m in v:
-        if m['_pyorick_id'] != _ID_SETVAR:
-          raise PYorickError("misformatted dict in message from yorick")
-        value[_bytes2str(m['name'])] = _decode(m['value'])
-    else:
-      value = [_decode(m) for m in v]
-
-  elif ident == _ID_EOL:
-    value = msg
-
-  # should active messages be processed here?
-  elif ident in _ID_ACTIVE:
-    raise PYorickError("quoted active message from yorick not yet supported")
-
-  else:
-    raise PYorickError("unrecognized message from yorick? (BUG?)")
-
-  return value
-
-# translate python value x into passive message for _put_msg
-# (each active message has its own function)
-def _encode(x):
-  # set up a passive message as a sequence of packets
-  # raises PYorickError if x is unsupported
-  if isinstance(x, bytearray):
-    x = np.array(x)
-  if isinstance(x, np.ndarray):
-    if x.size:
-      isa = x.shape + (0,)  # to match _is_array_of
-    else:
-      x = None
-      isa = False
-    if x.dtype == np.bool:
-      x = np.array(x, dtype=np.intc)
-  else:
-    isa = _is_array_of(x, Number)
-    if isa:
-      x = np.array(x)
-  if isa and not x.flags['CARRAY']:
-    x = np.copy(x, 'C')   # ensure nparray has C order, contiguous
-  if isa and (x.dtype.type is np.string_):
-    iss = x.shape + (0,)  # to match _is_array_of
-    x = x.tolist()  # convert string arrays to nested string lists
-    isa = False
-  else:
-    iss = _is_array_of(x, basestring)
-  if isa:
-    isan = _array_dtype(x)
-  # Now numbers or lists/tuples of equal length lists/tuples of numbers have
-  # been converted to arrays.  Also, arrays of strings have been converted
-  # to such lists/tuples of strings, and such lists/tuples of strings have
-  # been identified by iss.  Arrays have been copied to contiguous C-order
-  # if necessary.
-
-  # isa and iss are dimension lengths in python c-order.
-  # This protocol specifies that dimension order is fastest first, that is,
-  # yorick order, so shapes will be reversed in the protocol.
-  # The order choice in the protocol is arbitrary, but if it is not
-  # definite, then more information must be sent.
-
-  # The active GETSLICE and SETSLICE methods pose a more difficult problem,
-  # requiring the high level user to understand the dimension order difference
-  # between the two languages, no matter how this simpler shape description
-  # part of the passive messages is decided.
-
-  if isa:    # numeric array
-    msg = {'_pyorick_id': isan,
-           'hdr': np.array([isan, x.ndim], dtype=_py_long),
-           'shape': np.array(isa[0:-1][::-1], dtype=_py_long), 'value': x}
-
-  elif iss:  # string array
-    # flatten the string array to single unnested list
-    n = ndim = len(iss) - 1
-    if n == 0:
-      x = [x]
-    else :
-      while (n > 1):
-        x = [z for y in x for z in y]
-        n -= 1
-    # make sure all strings are 0-terminated, iso8859-1 encoded
-    x = [_zero_terminate(y) for y in x]
-    # send encoded string lengths, including trailing 0
-    msg = {'_pyorick_id': _ID_STRING,
-           'hdr': np.array([_ID_STRING, ndim], dtype=_py_long),
-           'shape': np.array(iss[0:-1][::-1], dtype=_py_long),
-           'lens': np.array([len(y) for y in x], dtype=_py_long),
-           'value': np.fromstring(''.join(x).encode('iso_8859_1'),
-                                  dtype=np.uint8)}
-
-  # index range, including (newaxis, Ellipsis) <--> (-, ..)
-  elif isinstance(x, _NewAxis):  # np.newaxis is unfortunately None
-    msg = {'_pyorick_id': _ID_SLICE,
-           'hdr': np.array([_ID_SLICE, 7], dtype=_py_long),
-           'value': np.array([0, 0, 1], dtype=_py_long)}
-  elif x is Ellipsis:
-    msg = {'_pyorick_id': _ID_SLICE,
-           'hdr': np.array([_ID_SLICE, 11], dtype=_py_long),
-           'value': np.array([0, 0, 1], dtype=_py_long)}
-  elif isinstance(x, slice):
-    if x.start is None:
-      smin = 0
-      flags = 1
-    else:
-      smin = x.start
-      flags = 0
-    if x.stop is None:
-      smax = 0
-      flags += 2
-    else:
-      smax = x.stop
-    if x.step is None:
-      sinc = 1 if flags or smin<=smax else -1
-    else:
-      sinc = x.step
-    msg = {'_pyorick_id': _ID_SLICE,
-           'hdr': np.array([_ID_SLICE, flags], dtype=_py_long),
-           'value': np.array([smin, smax, sinc], dtype=_py_long)}
-
-  # nil
-  elif x is None:
-    msg = {'_pyorick_id': _ID_NIL,
-           'hdr': np.array([_ID_NIL, 0], dtype=_py_long), 'value': None}
-
-  # list or tuple objects
-  elif isinstance(x, Sequence):
-    msg = {'_pyorick_id': _ID_GROUP,
-           'hdr': np.array([_ID_GROUP, 0], dtype=_py_long),
-           'value': [_encode(value) for value in x]}
-
-  # dict objects only allowed if all keys are strings
-  elif isinstance(x, dict) and ('_pyorick_id' not in x):
-    if all(isinstance(xx, basestring) for xx in x):
-      v = []
-      for key, value in _iteritems(x):
-        m = _encode_name(_ID_SETVAR, key)
-        m['value'] = _encode(value)
-        v.append(m)
-    else:
-      raise PYorickError("non-string key in dictionary")
-    msg = {'_pyorick_id': _ID_GROUP,
-           'hdr': np.array([_ID_GROUP, 1], dtype=_py_long),
-           'value': v}
-
-  elif isinstance(x, _YorickRef):
-    msg = _encode_name(_ID_GETVAR, x.name)
-
-  else:
-    raise PYorickError("unsupported passive object for yorick send")
-
-  return msg
-
-def _encode_name(ident, name):
-  try:
-    name = np.fromstring(name.encode('iso_8859_1'), dtype=np.uint8)
-  except UnicodeEncodeError:
-    raise PYorickError("non-iso_8859_1 names not recognized by yorick")
-  return {'_pyorick_id': ident,
-          'hdr': np.array([ident, len(name)], dtype=_py_long),
-          'name': name}
-
-# given python index list, convert to equivalent yorick index list
-def _fix_index_list(args):
-  args = args[::-1]  # reverse index order
-  for i in range(len(args)):
-    msg = args[i]
-    ident = msg['_pyorick_id']
-    if ident in _ID_INTEGER:
-      msg['value'] += 1     # index origin 0 --> 1
-    elif ident == _ID_SLICE:
-      msg['value'][0] += 1  # index origin 0 --> 1
-      if msg['value'][3] < 0:
-        msg['value'][1] += 2  # n=max-min --> n=max-min+1
-      # could also detect <nuller:> here?
-    # note that _ID_GETVAR index cannot be adjusted
-
-def _zero_terminate(s):
-  if (not len(s)) or (s[-1] != '\0'):
-    s += '\0'
-  return s[0:s.index('\0')+1]
-
-def _from_bytes(shape, lens, v):
-  # return string or possibly nested list of strings from byte encoding
-  ndim = len(shape)
-  size = np.prod(shape) if ndim else 1
-  i1 = np.cumsum(lens)
-  i0 = i1 - lens
-  i1 -= 1     # skip trailing 0 bytes (not optional in string arrays)
-  v = [v[i0[i]:i1[i]].tostring().decode('iso_8859_1') for i in xrange(size)]
-  for i in range(ndim-1):
-    # remains to convert 1D list of strings to nested lists
-    # shape is in yorick order, fastest first (not python c-order)
-    n = shape[i]
-    v = [v[j:j+n] for j in xrange(0, size, n)]
-    size /= n  # now top level is list of size lists
-  return v if ndim else v[0]
-
-def _bytes2str(b):
-  b = b[0:-1] if (len(b) and not b[-1]) else b
-  return b.tostring().decode('iso_8859_1')
-
-def _is_sysattr(name):
-  return len(name)>3 and name[0:2]=='__' and name[-2:]=='__'
-
-def _yorick_create(yorick_command, argv, args):
-  ptoy = _inheritable_pipe(0)
-  ytop = _inheritable_pipe(1)
-  pid, pfd = os.forkpty()
-  # pid = os.fork()
-  if not pid:   # subprocess side
-    os.close(ptoy[1])
-    os.close(ytop[0])
-    argv.extend([str(ptoy[0]), str(ytop[1])])
-    if args:
-      argv.extend(shlex.split(args))
-    os.execvp(yorick_command, argv)
-    os._exit(1)            # failed to launch yorick
-  os.close(ptoy[0])
-  os.close(ytop[1])
-  rfd = ytop[0]
-  wfd = ptoy[1]
-  # set reasonable termios attributes
-  t = termios.tcgetattr(pfd)
-  t[3] = t[3] & ~termios.ECHO
-  termios.tcsetattr(pfd, termios.TCSANOW, t)
-  return rfd, wfd, pfd, pid
-
-# See PEP 433.  After about Python 3.3, pipes are close-on-exec by default.
-def _inheritable_pipe(side):
-  p = os.pipe()
-  if hasattr(fcntl, 'F_SETFD') and hasattr(fcntl, 'FD_CLOEXEC'):
-    flags = fcntl.fcntl(p[side], fcntl.F_GETFD)
-    flags &= ~fcntl.FD_CLOEXEC
-    fcntl.fcntl(p[side], fcntl.F_SETFD, flags)
-  return p
-
-def _yorick_destroy(yorick):
-  if yorick.pid is not None:
-    try:
-      os.close(yorick.pfd)
-      os.close(yorick.rfd)
-      os.close(yorick.wfd)
-      os.waitpid(yorick.pid, 0)   # otherwise yorick becomes a zombie
-    finally:
-      yorick.pid = yorick.pfd = yorick.rfd = yorick.wfd = yorick.batch = None
-      yorick.debug = yorick.mode = yorick.mode_tmp = False
-      yorick.need_reply = False
-
-#if __name__ == "__main__":
-#  from pyorick_test import *
-#  pytest()
+# limit names exported by "from pyorick import *"
+__all__ = ['Yorick', 'PYorickError', 'ynewaxis', 'ystring0']
