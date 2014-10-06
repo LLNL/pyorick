@@ -1,33 +1,68 @@
-"""Interface to yorick as a subprocess.
+# pyorick.py
+"""Interface to a yorick process.
 
-yp = Yorick()      start a yorick process
-yp.kill()          kill a yorick process (like kill -9)
+yo = Yorick()      start a yorick process
+yo.kill()          kill a yorick process (like kill -9)
 
-yo = yp.call       return call by default handle
-oy = yp.eval       return eval by default handle
-yo, oy = yp.handles()
-yn = yp.now        return immediate handle
-yp = yo._yorick    return Yorick() instance, also oy._yorick, yn._yorick
+yo("code")         execute code in yorick, return None
+yo("=expr")        execute expr in yorick, return value
+yo.call("code")    execute code in yorick, return None
+yo.eval("expr")    execute expr in yorick, return value
 
-yp("code")         execute code in yorick, return None
-yo("code")         execute code in yorick, return None, same with oy, yn
+yo.value.varname   return value of yorick variable varname
+yo.call.varname    return call-reference to yorick variable varname
+yo.eval.varname    return eval-reference to yorick variable varname
+  The value, call, and eval handles may be abbreviated v, c, and e.
+  If varname is a yorick function or other non-data object,
+  yo.value.varname returns the same call-reference as yo.call.varname.
+yo.value.varname = expr   set value of yorick variable varname
+  Any of the three handles (call, eval, or value) may be used to set varname.
 
-yo.varname         call-like reference to yorick variable varname
-yo.varname()       return value of yorick varname
-yo.fname(arg1, arg2, ..., key1=karg1, ...)  invoke fname as subroutine
-yo.varname = expr  set value of yorick variable varname, same with oy, yn
-yo.varname.eval    same as oy.varname
-type, shape = yo.varname.info   return information about varname
+yo.call.fname(arg1, arg2, ..., key1=kw1, ...)  invoke fname as subroutine
+yo.eval.fname(arg1, arg2, ..., key1=kw1, ...)  invoke fname as function
 
-oy.varname         eval-like reference to yorick variable varname
-yo.varname()       return value of yorick varname
-oy.fname(arg1, arg2, ..., key1=karg1, ...)  invoke fname as function
-oy.aname[index1, index2, ...]         return slice of array aname
-oy.aname[index1, index2, ...] = expr  set slice of array aname
-oy.varname.call    same as yo.varname
+yo.eval.aname[index1, index2, ...]         return slice of array aname
+yo.eval.aname[index1, index2, ...] = expr  set slice of array aname
+  The index list uses yorick slice semantics with the eval handle;
+  if you get or set a slice using the call handle, the index list uses
+  python slice semantics.
 
-yn.varname         return value of yorick variable varname
-  if varname not data (e.g.- function), same as yo.varname
+Given any one of <handle> = value, call, eval, you can retrieve the
+parent Yorick object with yo.<handle>[], e.g.- yo.call[].
+
+A few potential yorick variable names cannot be accessed using the
+yo.<handle>.varname syntax (e.g.- __init__).  For these cases, all
+three handles accept a dict-like key:
+  yo.value['varname']   same as yo.value.varname (same for call, eval)
+
+Given a yorick variable reference of any type, you can get a different
+type of handle to the same variable by using the value, call, or eval
+attribute (or their abbreviations v, c, e), for example:
+  cvar = yo.call.varname
+  cvar.eval(args)     invoke varname as function
+  cvar.value          get the value of varname
+
+Yorick variable references also support an info attribute, which returns
+the type and shape of the yorick variable:
+  type, shape = yo.eval.varname.info
+This can be an important query if varname itself is a large array.
+
+All yorick array types except pointer and struct instance are valid data.
+A yorick string maps to a python str, but only str which do not contain
+any '\0' characters are possible in yorick.  Going from python to yorick,
+a str is silently truncated at its first '\0'.  A yorick array of strings
+becomes a nested list of python str.  In general, nested lists of python
+numbers will be converted to numpy arrays and sent to yorick.  A numpy
+array of strings, in addition to a nested list of strings, can also be
+sent to yorick.  A python list (or other sequence) of arbitrary
+representable data objects maps to an anonymous oxy object in yorick.
+A python dict with str keys maps to a yorick oxy object with named
+members.
+
+yo()               enter yorick terminal mode, special yorick commands are:
+  py                 from yorick terminal mode returns to python
+  py, "code"         from yorick terminal mode to exec code in python
+  py("expr")         from yorick terminal mode to eval expr in python
 """
 
 # Attempt to make it work for both python 2.6+ and python 3.x.
@@ -38,6 +73,7 @@ yn.varname         return value of yorick variable varname
 # others which may import it.
 # In particular, under 2.x, arguments passed in to this module from callers
 # that do not have unicode_literals in place will generally be non-unicode.
+# Therefore, better to stick to the default str than to use unicode_literals.
 from __future__ import print_function
 import sys
 if sys.version_info[0] >= 3:
@@ -66,7 +102,86 @@ from ctypes import (c_byte, c_ubyte, c_short, c_ushort, c_int, c_uint,
 ########################################################################
 
 class Yorick(object):
-  pass
+  """Interface to a yorick process.
+
+  Attributes:
+    call -    call-semantics handle
+    eval -    eval-semantics handle
+    value -   value-semantics handle
+
+    Handles are objects whose attributes represent yorick variables.
+  """
+  def __init__(self, extra='', **kwargs):
+    """Start a yorick process.
+
+    Parameters:
+      extra (str or list of str):  additional command line arguments
+    """
+    if isinstance(extra, Process):
+      self.proc = extra
+    else:
+      self.proc = ProcessDefault(extra, **kwargs)
+
+  def __del__(self):
+    self.kill()
+
+  def __repr__(self):
+    return "<connection to {0}>".format(repr(self.proc)[1:-1])
+
+  def kill(self):
+    """Kill yorick process."""
+    self.proc.kill()
+  def debug(self, on):
+    """Set or unset debug mode for yorick process."""
+    self.proc.debug(on)
+
+  def handles(self, which=3):
+    """Return handles whose attributes are yorick variables.
+
+    Parameters:
+      which (int, default is 3):
+        - 1 returns call-semantics handle
+        - 2 returns eval-semantics handle
+        - 4 returns value-semantics handle
+        - add to return tuple with up to three handles
+    """
+    h = [['call', 'eval', 'value'][i//2] for i in [1, 2, 4] if (which&i)]
+    if len(h) == 1:
+      return getattr(self, h[0])
+    else:
+      return tuple([getattr(self,h[i]) for i in range(len(h))])
+
+  # first reference shadows these properties (and abbreviations) in instance
+  @property
+  def call(self):
+    self.call = self.c = YorickHandle(0, self)
+    return self.call
+  @property
+  def eval(self):
+    self.eval = self.e = YorickHandle(1, self)
+    return self.eval
+  @property
+  def value(self):
+    self.value = self.v = YorickHandle(2, self)
+    return self.value
+  # single character abbreviations for interactive use
+  c = call
+  e = eval
+  v = value
+
+  def __call__(self, command=None, *args, **kwargs):  # pipe(command)
+    """Execute a yorick command."""
+    self.call(command, *args, **kwargs)
+
+  def _reqrep(self, msgid, *args, **kwargs):  # convenience for YorickHandle
+    reply = Message()
+    self.proc.reqrep(Message(msgid, *args, **kwargs), reply)
+    reply = reply.decode()
+    if isinstance(reply, tuple):
+      if msgid!=ID_GETVAR or reply!=tuple(ID_EOL, (2,), {}):
+        raise PYorickError("yorick sent error reply to request")
+      reply = YorickVarDerived(self, 0, args[0])
+    return reply
 
 # expose this to allow user to catch pyorick exceptions
 class PYorickError(Exception):
@@ -86,6 +201,211 @@ class YString0(str):
 ystring0 = YString0()
 
 ########################################################################
+
+class YorickHandle(object):
+  """Object whose attributes are yorick variables.
+
+  Do not attempt to probe with hasattribute or other introspection!
+  """
+
+  # Every attribute in this class should represent a yorick variable.
+  # The __XXX__ system names cannot be retrieved, nor can the
+  # practically unavoidable _reftype__ and _yorick__ attributes.
+  # However, no other attributes are permitted.
+
+  # must avoid __setattr__, __getattr__ by explicit calls through __dict__
+  def __init__(self, reftype, connection):
+    self.__dict__['_reftype__'] = reftype
+    self.__dict__['_yorick__'] = connection
+
+  def __repr__(self):
+    connection = self.__dict__['_yorick__']
+    typ = ['call', 'eval', 'value'][self.__dict__['_reftype__']]
+    s = "<yorick {0}-semantics handle to {1}>"
+    return s.format(typ, repr(connection.proc)[1:-1])
+
+  def __getitem__(self, key=None):
+    """Return parent connection, avoiding use of an attribute."""
+    connection = self.__dict__['_yorick__']
+    if key is None:
+      return connection
+    typ = self.__dict__['_reftype__']
+    if typ == 2:
+      typ = 0
+    return YorickVarDerived(connection, typ, key)
+
+  def __call__(self, command=None, *args, **kwargs):
+    """Implement handle(command) or handle(format, args, key=kwds)."""
+    if args or kwargs:
+      command = command.format(*args, **kwargs)
+    connection = self.__dict__['_yorick__']
+    typ = self.__dict__['_reftype__']
+    if command[0] == '=':   # leading = forces eval semantics
+      command = command[1:]
+      typ = 1
+    if command is None:
+      connection.proc.interact(YorickServer())
+    elif typ:
+      return connection._reqrep(ID_EVAL, command)
+    else:
+      return connection._reqrep(ID_EXEC, command)
+
+  def __setattr__(self, name, value):
+    """Implement handle.name = value."""
+    connection = self.__dict__['_yorick__']
+    if name not in self.__dict__:
+      connection._reqrep(ID_SETVAR, name, value)
+    else:
+      object.__setattr__(self, name, value)
+
+  def __getattr__(self, name):                   # pipe.name
+    # inspect module causes serious problems by probing for names
+    # ipython also probes for getdoc attribute
+    if (len(name)>3 and name[0:2]=='__' and name[-2:]=='__') or name=='getdoc':
+      raise AttributeError("YorickHandle instance has no attribute '"+name+"'")
+    if name in ['_reftype__', '_yorick__']:
+      return self.__dict__[name]
+    connection = self.__dict__['_yorick__']
+    typ = self.__dict__['_reftype__']
+    if typ == 2:
+      return connection._reqrep(ID_GETVAR, name)
+    return YorickVarDerived(connection, typ, name)
+
+class YorickVar(object):
+  """Reference to a yorick variable."""
+  def __init__(self, connection, reftype, name):
+    if not isinstance(name, basestr):
+      raise PYorickError("illegal yorick variable name")
+    self.yorick = connection
+    self.reftype = bool(reftype)
+    self.name = name
+
+  def __repr__(self):
+    connection = self.connection
+    typ = ['call', 'eval'][self.reftype]
+    s = "<yorick variable {0} ({1}) in {2}>"
+    return s.format(self.name, typ, repr(connection.proc)[1:-1])
+
+  def __call__(self, *args, **kwargs):
+    """Implement handle.name(args, kwargs)."""
+    if self.reftype:
+      return self.connection._reqrep(ID_FUNCALL, self.name, *args, **kwargs)
+    else:
+      self.connection._reqrep(ID_SUBCALL, self.name, *args, **kwargs)
+
+  def __getitem__(self, key): 
+    """Implement handle.name[key]."""
+    key = self._fix_indexing(key)
+    return self.connection._reqrep(ID_GETSLICE, self.name, *key)
+
+  def __setitem__(self, key, value):
+    """Implement handle.name[key] = value."""
+    key = self._fix_indexing(key) + (value,)
+    return self.connection._reqrep(ID_SETSLICE, self.name, *key)
+
+  def _fix_indexing(self, key):
+    if not isinstance(key, tuple):
+      key = (key,)  # only single index provided
+    if self.reftype:
+      return key
+    # convert from python index semantics to yorick index semantics
+    ndxs = []
+    for ndx in key[::-1]:  # reverse index order
+      if isinstance(ndx, slice):
+        if ndx:
+          i, j, s = ndx.start, ndx.stop, ndx.step
+          i += 1        # python.x[i:etc] --> yorick.x(i+1:etc)
+          if s < 0:
+            j += 2      # len=stop-step --> len=stop-step+1
+          # could also detect <nuller:> here?
+          ndx = slice(i, j, s)
+      elif isinstance(ndx, Number) or isinstance(ndx, np.ndarray):
+        if isinstance(ndx, bool):
+          ndx = int(ndx)
+        ndx += 1        # python.x[i] --> yorick.x(i+1)
+      elif isinstance(ndx, bytearray):
+        ndx = np.frombuffer(ndx, dtype=np.uint8) + 1
+      elif isinstance(ndx, Sequence):
+        shape, typ = codec.nested_test(ndx)
+        if typ == Number:
+          ndx = np.array(ndx) + 1   # python.x[i] --> yorick.x(i+1)
+      ndxs.append(ndx)
+    return tuple(ndxs)
+
+  def info(self):
+    """Implement handle.name.info."""
+    return self.connection._reqrep(ID_GETINFO, self.name)
+
+  def value(self):
+    """Implement handle.name.value."""
+    return self.connection._reqrep(ID_GETVAR, self.name)
+  # single character alias for interactive use
+  v = value
+
+# Hook for packages (like a lazy evaluator) to customize YorickVar;
+# YorickVarDerived is the object a YorickHandle uses.
+# The YorickVarDerived class must be a derived class of YorickVar.
+# The derived class must call YorickVar.__init__ in its constructor.
+YorickVarDerived = YorickVar
+
+class YorickServer(object):
+  """Server to accept requests from and generate replies to yorick."""
+  def start(self, command=None):
+    """Start server, optionally returning exec msg to be sent to yorick."""
+    self.started = False
+    self.request = Message()  # provide container for first request
+    if command:
+      # Unless this Process has some out-of-band way to enter terminal mode,
+      # yorick will be expecting a request.  Execing this yorick command
+      # must cause yorick to begin emitting requests rather than replies.
+      return Message(ID_EXEC, command)
+
+  def reply(self):
+    """Return message to be sent in reply to self.request."""
+    req = self.request.decode()
+    self.request = Message()  # empty container for next request
+    code = None
+    if isinstance(req, tuple):
+      if req[0]==ID_EOL and not req[1][0]:
+        # this is signal to exit terminal mode (matches start command)
+        return None
+      if req[0] == ID_EXEC:
+        text = req[1][0].replace('\0', '\n')
+        if not text:
+          # alternate signal to exit terminal mode (if no start command)
+          return None
+        code = compile(text, '<pyorick command>', 'exec')
+      elif req[0] == ID_EVAL:
+        text = req[1][0].replace('\0', '\n')
+        if text:
+          code = compile(text, '<pyorick command>', 'eval')
+    if code:
+      self.started = True
+      try:
+        msg = Message(None, eval(code, globals()))
+        return msg
+      except:
+        # any exceptions trying to eval or encode reply are yorick's problem
+        pass
+    elif not self.started:
+      self.request = None
+      return None   # assume that yorick never entered terminal mode
+    return Message(ID_EOL, 1)  # signal error to yorick
+
+  # Provide two cleanup options:
+  # 1. finish() or finish(command)  to optionally send a final yorick command
+  #   - if command supplied, server.request and server.reply() one last time
+  # 2. final(value)   to send a final value back to yorick
+  def finish(self, command=None):
+    """Stopping server, optionally returning exec msg to be sent to yorick."""
+    if command:
+      return Message(ID_EXEC, command)
+    # Empty request message from start or reply already present.
+    # Caller may call reply one final time if needed.
+
+  def final(self, value):
+    """Stopping server, returning data message to be sent to yorick."""
+    return Message(None, value)
 
 class Message(object):
   """Message to or from yorick in raw protocol-wire form.
@@ -255,7 +575,7 @@ class Clause(object):
       return self
     return add
 
-class codec:  # not really a class, just a convenient container
+class codec(object):  # not really a class, just a convenient container
   """Functions and tables to build, encode, and decode messages."""
   # This collection of methods makes protocol flexible and extensible.
   # To add new message type(s):
@@ -439,7 +759,7 @@ class codec:  # not really a class, just a convenient container
     msg.packets.append(nplongs(msgid, flag))
   @eol.decoder()
   def eol(msg):
-    return tuple(msg.packets[msg.pos-1].tolist().append({}))
+    return tuple(ID_EOL, (int(msg.packets[msg.pos-1][1]),), {})
 
   eval = Clause(idtable, ID_EVAL, ID_EXEC)
   @eval.reader()
@@ -451,12 +771,16 @@ class codec:  # not really a class, just a convenient container
   def eval(msg, msgid, text):
     text = np.fromiter(text.encode('iso_8859_1'), dtype=np.uint8)
     msg.packets.append(nplongs(msgid, len(text)))
-    msg.packets.append(text)
+    if len(text):
+      msg.packets.append(text)
   @eval.decoder()
   def eval(msg):
     pos = msg.pos
-    msg.pos += 1
-    text = msg.packets[pos].tostring().decode('iso_8859_1')
+    if msg.packets[pos-1][1]:
+      msg.pos += 1
+      text = msg.packets[pos].tostring().decode('iso_8859_1')
+    else:
+      text = ''
     return (msg.packets[pos-1][0], (text,), {})
 
   # same as eval, but may want to add name sanity checks someday
@@ -470,13 +794,17 @@ class codec:  # not really a class, just a convenient container
   def getvar(msg, msgid, name):
     name = np.fromiter(name.encode('iso_8859_1'), dtype=np.uint8)
     msg.packets.append(nplongs(msgid, len(name)))
-    msg.packets.append(name)
+    if len(name):
+      msg.packets.append(name)
   @getvar.decoder()
   def getvar(msg):
     pos = msg.pos
-    msg.pos += 1
-    text = msg.packets[pos].tostring().decode('iso_8859_1')
-    return (msg.packets[pos-1][0], (text,), {})
+    if msg.packets[pos-1][1]:
+      msg.pos += 1
+      name = msg.packets[pos].tostring().decode('iso_8859_1')
+    else:
+      name = ''
+    return (msg.packets[pos-1][0], (name,), {})
 
   # same as eval, but may want to add name sanity checks someday
   setvar = Clause(idtable, ID_SETVAR)
@@ -496,7 +824,8 @@ class codec:  # not really a class, just a convenient container
   def setvar(msg, msgid, name, value):
     name = np.fromiter(name.encode('iso_8859_1'), dtype=np.uint8)
     msg.packets.append(nplongs(msgid, len(name)))
-    msg.packets.append(name)
+    if len(name):
+      msg.packets.append(name)
     msgid, args, kwargs = self.encode_data(value)
     if msgid not in codec.qmlist.allowed[0]:
       raise PYorickError("illegal setvar value msgid in encoder")
@@ -504,9 +833,12 @@ class codec:  # not really a class, just a convenient container
   @setvar.decoder()
   def setvar(msg):
     pos = msg.pos
-    msg.pos += 1
-    args = (msg.packets[pos].tostring().decode('iso_8859_1'),
-            codec.idtable[msg.packets[pos+1][0]].decoder(msg))
+    if msg.packets[pos-1][1]:
+      msg.pos += 1
+      name = msg.packets[pos].tostring().decode('iso_8859_1')
+    else:
+      name = ''
+    args = (name, codec.idtable[msg.packets[pos+1][0]].decoder(msg))
     return (msg.packets[pos-1][0], args, {})
 
   funcall = Clause(idtable, ID_FUNCALL, ID_SUBCALL)
@@ -521,12 +853,15 @@ class codec:  # not really a class, just a convenient container
   @funcall.decoder()
   def funcall(msg):
     pos = msg.pos
-    msg.pos += 1
-    text = msg.packets[pos].tostring().decode('iso_8859_1')
+    if msg.packets[pos-1][1]:
+      msg.pos += 1
+      name = msg.packets[pos].tostring().decode('iso_8859_1')
+    else:
+      name = ''
     args = []
     kwargs = {}
     codec.qmlist.decoder(msg, 2, kind, args, kwargs)
-    return (msg.packets[pos-1][0], (text,)+tuple(args), kwargs)
+    return (msg.packets[pos-1][0], (name,)+tuple(args), kwargs)
 
   getslice = Clause(idtable, ID_GETSLICE)
   @getslice.reader()
@@ -540,11 +875,14 @@ class codec:  # not really a class, just a convenient container
   @getslice.decoder()
   def getslice(msg):
     pos = msg.pos
-    msg.pos += 1
-    text = msg.packets[pos].tostring().decode('iso_8859_1')
+    if msg.packets[pos-1][1]:
+      msg.pos += 1
+      name = msg.packets[pos].tostring().decode('iso_8859_1')
+    else:
+      name = ''
     args = []
     codec.qmlist.decoder(msg, 0, kind, args, {})
-    return (msg.packets[pos-1][0], (text,)+tuple(args), kwargs)
+    return (msg.packets[pos-1][0], (name,)+tuple(args), kwargs)
 
   setslice = Clause(idtable, ID_SETSLICE)
   @setslice.reader()
@@ -558,12 +896,15 @@ class codec:  # not really a class, just a convenient container
   @setslice.decoder()
   def setslice(msg):
     pos = msg.pos
-    msg.pos += 1
-    text = msg.packets[pos].tostring().decode('iso_8859_1')
+    if msg.packets[pos-1][1]:
+      msg.pos += 1
+      name = msg.packets[pos].tostring().decode('iso_8859_1')
+    else:
+      name = ''
     args = []
     codec.qmlist.decoder(msg, 0, kind, args, {})
     value = codec.idtable[msg.packets[pos+1][0]].decoder(msg)
-    return (msg.packets[pos-1][0], (text,)+tuple(args)+(value,), {})
+    return (msg.packets[pos-1][0], (name,)+tuple(args)+(value,), {})
 
   # eol terminated lists, qmlist means "quoted message list"
   qmlist = Clause()
@@ -683,29 +1024,11 @@ class codec:  # not really a class, just a convenient container
       return codec.encode_sarray((), value)
 
     elif isinstance(value, Sequence):   # check for array-like nested sequence
-      shape = []
-      v = value
-      while True:
-        shape.append(len(value))
-        v0 = v[0]
-        is isinstance(v0, Number):
-          if any(not isinstance(i, Number) for i in v[1:]):
-            break
-          msgid = 0
-          break
-        elif isinstance(v0, basestring):
-          if any(not isinstance(i, basestring) for i in v[1:]):
-            break
-          msgid = ID_STRING
-          return codec.encode_sarray(shape, value)
-        elif isinstance(v0, Sequence):
-          n = len(v0)
-          shape.append(n)
-          if any((not isinstance(i, Sequence)) or len(i)!=n for i in v[1:]):
-            break
-        else:
-          break
-      if msgid < 0:  # may raise errors later, but not array-like
+      shape, typ = codec.nested_test(value)
+      if type == basestr:
+        return codec.encode_sarray(shape, value)
+      elif typ != Number:
+        # may raise errors later, but not array-like
         return (ID_LST, (value), {})
       # np.array converts nested list of numbers to ndarray
       value = np.array(value)
@@ -745,20 +1068,63 @@ class codec:  # not really a class, just a convenient container
         raise PYorickError("cannot encode dict with non-string key")
       return (ID_DCT, (value), {})
 
-    elif isinstance(value, YorickRef):
+    elif isinstance(value, YorickVar):
       return (ID_GETVAR, (value.name), {})
 
     else:
       raise PYorickError("cannot encode unsupported data object")
+
+  @staticmethod
+  def nested_test(value):  # value is a Sequence
+    shape = (len(value),)
+    if shape[0]:
+      v = value[0]
+      if isinstance(v, Number):
+        if all(isinstance(v, Number) for v in value[1:]):
+          return shape, Number
+      elif isinstance(v, basestring):
+        if all(isinstance(v, basestring) for v in value[1:]):
+          return shape, basestring
+      elif isinstance(v, Sequence):
+        n, typ = codec.nested_test(v)
+        if typ:
+          for v in value[1:]:
+            if isinstance(v, Sequence):
+              m, t = codec.nested_test(v)
+              if m==n and t==typ:
+                continue
+            return shape, None
+        return shape + n, typ
+    return shape, None
+    
 
 def nplongs(*args):
   return np.array(args, dtype=c_long)
 
 ########################################################################
 
-class Process:
-  def __init__(self, yorick_command, argv, args):
-    # complete argv will be:   argv rfd wfd args
+class Process(object):
+  def kill(self):
+    raise NotImplementedError("This process does not implement kill.")
+  def reqrep(self, request, encoder):
+    raise NotImplementedError("This process does not implement reqrep.")
+  def interact(self, server):
+    raise NotImplementedError("This process does not implement interact.")
+  def debug(self):
+    raise NotImplementedError("This process does not implement debug.")
+
+ypathd = "yorick"     # default yorick command
+ipathd = "pyorick.i"  # default pyorick.i include file
+
+class PtyProcess(Process):
+  """Process using binary pipes and tty-pty for stdin/out/err."""
+  def __init__(self, extra, ypath=None, ipath=None):
+    if ypath is None:
+      ypath = ypathd
+    if ipath is None:
+      ipath = ipathd
+    argv = [ypath, '-q', '-i', ipath]
+    # complete argv will be:   argv rfd wfd extra
     ptoy = self.inheritable_pipe(0)
     ytop = self.inheritable_pipe(1)
     self.pid, self.pfd = os.forkpty()
@@ -767,9 +1133,9 @@ class Process:
       os.close(ptoy[1])
       os.close(ytop[0])
       argv.extend([str(ptoy[0]), str(ytop[1])])
-      if args:
-        argv.extend(shlex.split(args))
-      os.execvp(yorick_command, argv)
+      if extra:
+        argv.extend(shlex.split(extra))
+      os.execvp(ypath, argv)
       os._exit(1)            # failed to launch yorick
     os.close(ptoy[0])
     os.close(ytop[1])
@@ -795,17 +1161,8 @@ class Process:
         self.debug = self.mode = self.mode_tmp = False
         self.need_reply = False
 
-  # See PEP 433.  After about Python 3.3, pipes are close-on-exec by default.
-  @staticmethod
-  def inheritable_pipe(side):
-    p = os.pipe()
-    if hasattr(fcntl, 'F_SETFD') and hasattr(fcntl, 'FD_CLOEXEC'):
-      flags = fcntl.fcntl(p[side], fcntl.F_GETFD)
-      flags &= ~fcntl.FD_CLOEXEC
-      fcntl.fcntl(p[side], fcntl.F_SETFD, flags)
-    return p
-
   def reqrep(self, request, encoder):
+    self.echo_pty()  # flush out any pending output
     try:  # send request
       for packet in request:
         self.send(packet)
@@ -818,6 +1175,106 @@ class Process:
     except:
       self.kill()
       raise PYorickError("failed to receive complete message, yorick killed")
+    # not finished until yorick comes back to its prompt
+    self.wait_for_prompt()
+
+  def interact(self, server):
+    self.echo_pty()  # flush out any pending output
+    self.send(server.start("pyorick"))  # tell yorick to enter terminal mode
+    # handshake for yorick never entering terminal mode below
+    prompt = None
+    while True:
+      # either prompt will arrive or another request
+      try:
+        p = select.select([self.pfd, self.rfd], [], [self.pfd, self.rfd])
+        if p[2]:
+          self.kill()
+          raise PYorickError("Select reports error, yorick killed.")
+        if self.rfd in p[0]:
+          self.recv(server.request)
+          rep = server.reply()
+          if rep:
+            self.send(rep)  # yorick is blocked waiting for this
+          else:
+            break
+        elif self.rfd in p[0]:
+          # only get here when no more requests on rfd
+          prompt = self.echo_pty(True)
+          if prompt:  # pass along prompt and wait for user to respond
+            self.send0(raw_input(prompt))
+      except KeyboardInterrupt:
+        self.send0('\x03', True)  # send ctrl-c to pty
+    if server.request:  # if not, never entered terminal mode
+      self.echo_pty(True)  # flush pending output before releasing yorick
+      self.send(server.final(None))       # handshake to exit terminal mode
+    self.wait_for_prompt()
+
+  def wait_for_prompt(self, mode=False):
+    while True:
+      p = select.select([self.pfd], [], [self.pfd])
+      prompt = echo_pty(mode)
+      if prompt:
+        return prompt
+
+  def echo_pty(self, mode=False):
+    """Print yorick stdout/stderr, returning final prompt if any."""
+    if not self.pfd:
+      return None
+    s = ''
+    i = 0    # curiously hard to get reply promptly?
+    while i < 3:  # continue until no output pending
+      try:
+        p = select.select([self.pfd], [], [self.pfd], 0)
+      except:
+        p = ([], [], [self.pfd])
+      if p[0]:
+        try:
+          s += os.read(self.pfd, 16384).decode('iso_8859_1')
+        except:
+          p = (0, 0, 1)
+      if p[2]:
+        self.kill()
+        raise PYorickError("Read or select error on pty, yorick killed.")
+      if not p[0]:
+        i += 1
+    prompt = None
+    if s:
+      # remove prompt in interactive (no idler) mode
+      if mode and s.endswith("> "):
+        i = s.rfind('\n') + 1  # 0 on failure
+        prompt = s[i:]
+        s = s[0:i]
+      if s:
+        print(s, end='')  # terminal newline already in s
+    return prompt
+
+  def send0(self, text, nolf=False):
+    if self.pfd:
+      if not nolf:
+        if not text.endswith('\n'):
+          text += '\n'
+      n = 0
+      while n < len(text):
+        try:
+          n += os.write(self.pfd, text[n:].encode('iso_8859_1'))
+        except UnicodeEncodeError:
+          print("<--- did not send non-ISO-8859-1 text to yorick --->")
+          text = '\n'
+          n = 0
+        except:
+          self.kill()
+          raise PYorickError("Unable to write to yorick stdin, yorick killed.")
+
+  # See PEP 433.  After about Python 3.3, pipes are close-on-exec by default.
+  @staticmethod
+  def inheritable_pipe(side):
+    """Return a pipe that is *not* close-on-exec."""
+    p = os.pipe()
+    if hasattr(fcntl, 'F_SETFD') and hasattr(fcntl, 'FD_CLOEXEC'):
+      flags = fcntl.fcntl(p[side], fcntl.F_GETFD)
+      flags &= ~fcntl.FD_CLOEXEC
+      fcntl.fcntl(p[side], fcntl.F_SETFD, flags)
+    return p
 
   def recv(self, packet):
     """Read numpy array packet from self.rfd."""
@@ -858,11 +1315,11 @@ class Process:
     if self.debug and n:
       print(("P>send: {0} bytes sent".format(n)))
 
-  def set_stdout(self, callback):
-    pass
+ProcessDefault = PtyProcess
 
-  def interact(self, server):
-    pass
+class PipeProcess(PtyProcess):
+  """Process using subprocess, binary pipes, and stdin/out/err pipes."""
+  pass
 
 ########################################################################
 

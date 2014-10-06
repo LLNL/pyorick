@@ -91,7 +91,7 @@ func py(command, ..)
 {
   if (is_void(command)) {  /* exit yorick terminal mode */
     _pyorick_send, [_ID_EOL, 0];  /* tell python to exit terminal mode */
-    write, format="%s", "ExitTerminalMode> ";
+    /* write, format="%s", "ExitTerminalMode> "; */
     /* pause for python to acknowledge with _ID_NIL message */
     if (!is_void(_pyorick_decode(_pyorick_get())))
       _pyorick_panic, "bad acknowledgement exiting yorick terminal mode";
