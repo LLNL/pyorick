@@ -274,7 +274,7 @@ class YorickHandle(object):
 class YorickVar(object):
   """Reference to a yorick variable."""
   def __init__(self, connection, reftype, name):
-    if not isinstance(name, basestr):
+    if not isinstance(name, basestring):
       raise PYorickError("illegal yorick variable name")
     self.yorick = connection
     self.reftype = bool(reftype)
@@ -461,13 +461,13 @@ class Message(object):
     else:
       this is data
   """
-  def __init__(self, *args, *kwargs):
+  def __init__(self, *args, **kwargs):
     self.packets = []
     if not args:
       return None
     msgid = args[0]
     if msgid is None:
-      msgid, args, kwargs = self.encode_data(*args[1:])
+      msgid, args, kwargs = codec.encode_data(*args[1:])
       codec.idtable[msgid].encoder(self, msgid, *args, **kwargs)
 
   def encoder(self):
@@ -543,6 +543,10 @@ ID_EXEC, ID_EVAL, ID_GETVAR, ID_SETVAR, ID_FUNCALL, ID_SUBCALL =\
 ID_GETSLICE, ID_SETSLICE, ID_GETSHAPE =\
    38,          39,          40
 
+# convenience values
+ID_LONG = 3
+ID_NUMERIC = [i for i in range(16)]
+
 # Each instance of Clause represents a clause of the message grammar.
 # At minimum, the functions to build, encode, and decode that clause must
 # be defined.  These definitions are in codec below.
@@ -552,7 +556,7 @@ class Clause(object):
   def __init__(self, idtable=None, *idlist):
     self.idlist = idlist  # tuple of message ids if top level clause
     for msgid in idlist:
-      idtable[i] = self
+      idtable[msgid] = self
 
   # The reader, encoder, and decoder are decorator functions for codec,
   # which shadow themselves in each instance.
@@ -593,12 +597,12 @@ class codec(object):  # not really a class, just a convenient container
            c_float, c_double, c_longdouble,
            c_ubyte, c_ushort, c_uint, c_ulong, c_ulonglong,
            np.csingle, np.complex_, None]  # no portable complex long double
-  typesz = [sizeof(types[i]) for i in range(15)].append(0)
+  typesz = [np.dtype(types[i]).itemsize for i in range(15)] + [0]
   typesk = ['i']*5 + ['f']*3 + ['u']*5 + ['c']*2 + ['none']
   typesk = [typesk[i]+str(typesz[i]) for i in range(16)]  # keys for typtab
   # lookup table for msgid given typesk (computable from dtype)
   typtab = [0, 1, 2, 4, 3, 5, 7, 6, 8, 9, 10, 12, 11, 13, 15, 14]
-  typtab = dict([[typesk[typtab[i]], typtab[i]] for i in range[16]])
+  typtab = dict([[typesk[typtab[i]], typtab[i]] for i in range(16)])
 
   # dict of top level clauses by key=message id
   idtable = {}  # idtable[msgid] --> top level message handler for msgid
@@ -625,7 +629,7 @@ class codec(object):  # not really a class, just a convenient container
     rank = len(shape)
     msg.packets.append(nplongs(msgid, rank))
     if rank:
-      msg.packets.append(shape)
+      msg.packets.append(nplongs(shape[::-1]))
     msg.packets.append(value)
   @narray.decoder()
   def narray(msg):
@@ -648,6 +652,10 @@ class codec(object):  # not really a class, just a convenient container
   @sarray.encoder()
   def sarray(msg, msgid, shape, lens, value):
     codec.narray.encoder(msg, ID_LONG, shape, lens)
+    if len(shape):
+      msg.packets[-3][0] = ID_STRING
+    else:
+      msg.packets[-2][0] = ID_STRING
     if value.nbytes:
       msg.packets.append(value)
   @sarray.decoder()
@@ -671,7 +679,7 @@ class codec(object):  # not really a class, just a convenient container
   def slice(msg):
     packet = nplongs(0, 0, 0)
     yield packet
-  @slice.encoder(msg)
+  @slice.encoder()
   def slice(msg, msgid, x, flags=None):
     if not flags: 
       if x.start is None:
@@ -732,7 +740,7 @@ class codec(object):  # not really a class, just a convenient container
   @lst.decoder()
   def lst(msg):
     value = []
-    codec.qmlist.decoder(msg, 0, value)
+    codec.qmlist.decoder(msg, 0, value, {})
     return value
 
   dct = Clause(idtable, ID_DCT)
@@ -756,7 +764,7 @@ class codec(object):  # not really a class, just a convenient container
     pass
   @eol.encoder()
   def eol(msg, flag=0):
-    msg.packets.append(nplongs(msgid, flag))
+    msg.packets.append(nplongs(ID_EOL, flag))
   @eol.decoder()
   def eol(msg):
     return tuple(ID_EOL, (int(msg.packets[msg.pos-1][1]),), {})
@@ -769,7 +777,7 @@ class codec(object):  # not really a class, just a convenient container
       yield packet
   @eval.encoder()
   def eval(msg, msgid, text):
-    text = np.fromiter(text.encode('iso_8859_1'), dtype=np.uint8)
+    text = np.fromiter(bytearray(text.encode('iso_8859_1')), dtype=np.uint8)
     msg.packets.append(nplongs(msgid, len(text)))
     if len(text):
       msg.packets.append(text)
@@ -792,7 +800,7 @@ class codec(object):  # not really a class, just a convenient container
       yield packet
   @getvar.encoder()
   def getvar(msg, msgid, name):
-    name = np.fromiter(name.encode('iso_8859_1'), dtype=np.uint8)
+    name = np.fromiter(bytearray(name.encode('iso_8859_1')), dtype=np.uint8)
     msg.packets.append(nplongs(msgid, len(name)))
     if len(name):
       msg.packets.append(name)
@@ -822,11 +830,11 @@ class codec(object):  # not really a class, just a convenient container
       yield packet
   @setvar.encoder()
   def setvar(msg, msgid, name, value):
-    name = np.fromiter(name.encode('iso_8859_1'), dtype=np.uint8)
+    name = np.fromiter(bytearray(name.encode('iso_8859_1')), dtype=np.uint8)
     msg.packets.append(nplongs(msgid, len(name)))
     if len(name):
       msg.packets.append(name)
-    msgid, args, kwargs = self.encode_data(value)
+    msgid, args, kwargs = codec.encode_data(value)
     if msgid not in codec.qmlist.allowed[0]:
       raise PYorickError("illegal setvar value msgid in encoder")
     codec.idtable[msgid].encoder(msg, msgid, *args, **kwargs)
@@ -860,7 +868,7 @@ class codec(object):  # not really a class, just a convenient container
       name = ''
     args = []
     kwargs = {}
-    codec.qmlist.decoder(msg, 2, kind, args, kwargs)
+    codec.qmlist.decoder(msg, 2, args, kwargs)
     return (msg.packets[pos-1][0], (name,)+tuple(args), kwargs)
 
   getslice = Clause(idtable, ID_GETSLICE)
@@ -881,7 +889,7 @@ class codec(object):  # not really a class, just a convenient container
     else:
       name = ''
     args = []
-    codec.qmlist.decoder(msg, 0, kind, args, {})
+    codec.qmlist.decoder(msg, 0, args, {})
     return (msg.packets[pos-1][0], (name,)+tuple(args), kwargs)
 
   setslice = Clause(idtable, ID_SETSLICE)
@@ -902,7 +910,7 @@ class codec(object):  # not really a class, just a convenient container
     else:
       name = ''
     args = []
-    codec.qmlist.decoder(msg, 0, kind, args, {})
+    codec.qmlist.decoder(msg, 0, args, {})
     value = codec.idtable[msg.packets[pos+1][0]].decoder(msg)
     return (msg.packets[pos-1][0], (name,)+tuple(args)+(value,), {})
 
@@ -925,18 +933,18 @@ class codec(object):  # not really a class, just a convenient container
   def qmlist(msg, kind, args, kwargs):
     allowed = codec.qmlist.allowed[kind]
     for arg in args:
-      msgid, iargs, ikwargs = self.encode_data(value)
+      msgid, iargs, ikwargs = codec.encode_data(arg)
       codec.idtable[msgid].encoder(msg, msgid, *iargs, **ikwargs)
     for key in kwargs:
       codec.setvar.encoder(msg, ID_SETVAR, key, kwargs[key])
-    msg.packets.append(codec.eol.encoder(msg))
+    codec.eol.encoder(msg)
   @qmlist.decoder()
   def qmlist(msg, kind, args, kwargs):
     allowed = codec.qmlist.allowed[kind]
     while True:
       pos = msg.pos
       msg.pos += 1
-      packet = packets[pos]
+      packet = msg.packets[pos]
       msgid = packet[0]
       if msgid not in allowed:
         if msgid!=ID_EOL or packet[1]:  # always caught by reader or encoder?
@@ -948,20 +956,21 @@ class codec(object):  # not really a class, just a convenient container
       else:
         args.append(item)
   # set allowed msgids for the various types of list (used by reader)
-  qmlist.allowed = [i for i in range(ID_EOL)].append(ID_GETVAR)
-  qmlist.allowed = [qmlist.allowed                     # llist
-                    [ID_SETVAR],                       # dlist
-                    qmlist.allowed.append(ID_SETVAR)]  # alist
+  qmlist.allowed = [i for i in range(ID_EOL)] + [ID_GETVAR]
+  qmlist.allowed = [qmlist.allowed,              # llist
+                    [ID_SETVAR],                 # dlist
+                    qmlist.allowed+[ID_SETVAR]]  # alist
 
   @staticmethod
   def decode_sarray(lens, value):
     shape = lens.shape
     if shape:
       n = np.prod(shape)
+      shape = shape[::-1]
     else:
       n = 1
     # split value into 1D list of strings v
-    lens = ravel(lens)
+    lens = np.ravel(lens)
     i1 = np.cumsum(lens)
     i0 = i1 - lens
     i1 -= 1
@@ -995,19 +1004,19 @@ class codec(object):  # not really a class, just a convenient container
         value = v
     else:
       value = [value]
+    val = []
     lens = []
-    for i in xrange(len(value)):
-      v = value[i]
+    for v in value:
       if '\0' in v:
         v = v[0:v.index('\0')+1]  # truncate after first NULL
-      else if not isinstance(v, YString0):
+      elif not isinstance(v, YString0):
         v += '\0'
       v = v.encode('iso_8859_1')
       lens.append(len(v))
-      value[i] = v
+      val.append(v)
     lens = np.array(lens, dtype=c_long).reshape(shape)
-    value = np.array(b''.join(value), dtype=uint8)
-    return (ID_STRING, (shape, lens, value), {})
+    val = np.array(bytearray(b''.join(val)), dtype=np.uint8)
+    return (ID_STRING, (shape, lens, val), {})
 
   # decode work done, but encode still needs to recogize python data
   @staticmethod
@@ -1025,11 +1034,11 @@ class codec(object):  # not really a class, just a convenient container
 
     elif isinstance(value, Sequence):   # check for array-like nested sequence
       shape, typ = codec.nested_test(value)
-      if type == basestr:
+      if typ == basestring:
         return codec.encode_sarray(shape, value)
       elif typ != Number:
         # may raise errors later, but not array-like
-        return (ID_LST, (value), {})
+        return (ID_LST, (value,), {})
       # np.array converts nested list of numbers to ndarray
       value = np.array(value)
 
@@ -1044,9 +1053,9 @@ class codec(object):  # not really a class, just a convenient container
       if k == 'b':
         k = 'u'
       k += str(value.dtype.itemsize)
-      if k not in typtab:
+      if k not in codec.typtab:
         PYorickError("cannot encode unsupported array numeric dtype")
-      msgid = typtab[k]
+      msgid = codec.typtab[k]
       if not value.flags['CARRAY']:
         value = np.copy(value, 'C')
       return (msgid, (shape, value), {})
@@ -1057,7 +1066,7 @@ class codec(object):  # not really a class, just a convenient container
     elif value is Ellipsis:
       return (ID_SLICE, (None, 11), {})
     elif isinstance(value, slice):
-      return (ID_SLICE, (value), {})
+      return (ID_SLICE, (value,), {})
 
     elif value is None:
       return (ID_NIL, (), {})
@@ -1066,10 +1075,10 @@ class codec(object):  # not really a class, just a convenient container
     elif isinstance(value, Mapping):
       if not all(isinstance(key, basestring) for key in value):
         raise PYorickError("cannot encode dict with non-string key")
-      return (ID_DCT, (value), {})
+      return (ID_DCT, (value,), {})
 
     elif isinstance(value, YorickVar):
-      return (ID_GETVAR, (value.name), {})
+      return (ID_GETVAR, (value.name,), {})
 
     else:
       raise PYorickError("cannot encode unsupported data object")
