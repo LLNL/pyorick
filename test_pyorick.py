@@ -36,7 +36,7 @@ class TestCodec(unittest.TestCase):
         self.groups = [(), [], ([], None), self.scalars, {},
                        {'key'+str(k):self.scalars[k]
                         for k in range(len(self.scalars))},
-                       [[1,'abc'], {'a':1, 'b':[2,3,4]}],
+                       [[1,'abc'], {'a':1, 'b':[2,'c',4]}],
                        {'key0':[1,'abc'], 'key1':{'a':1, 'b':2}}]
         # unrepresentable objects
         self.bad = [{'a':[1,2,3], 2:[4,5,6]},  # illegal key type
@@ -91,6 +91,24 @@ class TestCodec(unittest.TestCase):
                 msg = Message(None, self.bad[i])
             self.assertIsInstance(cm.exception, PYorickError,
                                   'codec failed on item '+str(i))
+
+    def test_reader(self):
+        """Check codec readers."""
+        for obj in self.scalars + self.arrays + self.strings + self.groups:
+            m = Message(None, obj)
+            mlen = len(m.packets)
+            msg = Message()
+            i = 0
+            for packet in msg.encoder():
+                em = str(i)+': '+repr(obj)
+                self.assertLess(i, mlen, 'reader stopped late on ' + em)
+                self.assertEqual(packet.dtype.itemsize,
+                                 m.packets[i].dtype.itemsize,
+                                 'reader wrong size on ' + em)
+                np.copyto(packet, m.packets[i], casting='safe')
+                i += 1
+            self.assertEqual(i, mlen, 'reader stopped early on ' + 
+                             str(i)+': '+repr(obj))
 
 if __name__ == '__main__':
     unittest.main()

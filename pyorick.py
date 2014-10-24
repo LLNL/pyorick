@@ -611,9 +611,11 @@ class codec(object):  # not really a class, just a convenient container
   def reader(msg):
     if msg.packets:
       PYorickError("attempt to read into non-empty message")
-    packets[0] = packet = nplongs(0, 0)
+    packet = nplongs(0, 0)
+    msg.packets.append(packet)
     yield packet
-    codec.idtable[packet[0]].reader(msg)
+    for packet in codec.idtable[packet[0]].reader(msg):
+      yield packet
 
   narray = Clause(idtable, *ID_NUMERIC)
   @narray.reader()
@@ -621,15 +623,16 @@ class codec(object):  # not really a class, just a convenient container
     msgid, rank = msg.packets[-1]
     shape = np.zeros(rank, dtype=c_long)
     if rank > 0:
+      msg.packets.append(shape)
       yield shape
-    value = np.zeros(shape, dtype=codec.types[msgid])
-    yield value
+    msg.packets.append(np.zeros(shape[::-1], dtype=codec.types[msgid]))
+    yield msg.packets[-1]
   @narray.encoder()
   def narray(msg, msgid, shape, value):
     rank = len(shape)
     msg.packets.append(nplongs(msgid, rank))
     if rank:
-      msg.packets.append(nplongs(shape[::-1]))
+      msg.packets.append(nplongs(*shape[::-1]))
     msg.packets.append(value)
   @narray.decoder()
   def narray(msg):
@@ -646,9 +649,15 @@ class codec(object):  # not really a class, just a convenient container
     msgid, rank = msg.packets[-1]
     shape = np.zeros(rank, dtype=c_long)
     if rank > 0:
+      msg.packets.append(shape)
       yield shape
-    value = np.zeros(shape, dtype=np.uint8)
-    yield value
+    lens = np.zeros(shape[::-1], dtype=c_long)
+    msg.packets.append(lens)
+    yield lens
+    lens = lens.sum()
+    if lens:
+      msg.packets.append(np.zeros(lens, dtype=np.uint8))
+      yield msg.packets[-1]
   @sarray.encoder()
   def sarray(msg, msgid, shape, lens, value):
     codec.narray.encoder(msg, ID_LONG, shape, lens)
@@ -677,8 +686,8 @@ class codec(object):  # not really a class, just a convenient container
   slice = Clause(idtable, ID_SLICE)
   @slice.reader()
   def slice(msg):
-    packet = nplongs(0, 0, 0)
-    yield packet
+    msg.packets.append(nplongs(0, 0, 0))
+    yield msg.packets[-1]
   @slice.encoder()
   def slice(msg, msgid, x, flags=None):
     if not flags: 
@@ -720,7 +729,8 @@ class codec(object):  # not really a class, just a convenient container
   nil = Clause(idtable, ID_NIL)
   @nil.reader()
   def nil(msg):
-    pass
+    return
+    yield  # this is a generator that raises StopIteration on first call
   @nil.encoder()
   def nil(msg, msgid):
     msg.packets.append(nplongs(msgid, 0))
@@ -731,7 +741,7 @@ class codec(object):  # not really a class, just a convenient container
   lst = Clause(idtable, ID_LST)
   @lst.reader()
   def lst(msg):
-    for packet in codec.qmlist.reader(0):
+    for packet in codec.qmlist.reader(msg, 0):
       yield packet
   @lst.encoder()
   def lst(msg, msgid, value):
@@ -746,7 +756,7 @@ class codec(object):  # not really a class, just a convenient container
   dct = Clause(idtable, ID_DCT)
   @dct.reader()
   def dct(msg):
-    for packet in codec.qmlist.reader(1):
+    for packet in codec.qmlist.reader(msg, 1):
       yield packet
   @dct.encoder()
   def dct(msg, msgid, value):
@@ -761,7 +771,8 @@ class codec(object):  # not really a class, just a convenient container
   eol = Clause(idtable, ID_EOL)
   @eol.reader()
   def eol(msg):
-    pass
+    return
+    yield  # this is a generator that raises StopIteration on first call
   @eol.encoder()
   def eol(msg, flag=0):
     msg.packets.append(nplongs(ID_EOL, flag))
@@ -797,6 +808,7 @@ class codec(object):  # not really a class, just a convenient container
   def getvar(msg):
     packet = np.zeros(msg.packets[-1][1], dtype=np.uint8)
     if packet.nbytes:
+      msg.packets.append(packet)
       yield packet
   @getvar.encoder()
   def getvar(msg, msgid, name):
@@ -820,8 +832,10 @@ class codec(object):  # not really a class, just a convenient container
   def setvar(msg):
     packet = np.zeros(msg.packets[-1][1], dtype=np.uint8)
     if packet.nbytes:
+      msg.packets.append(packet)
       yield packet
     packet = nplongs(0, 0)
+    msg.packets.append(packet)
     yield packet
     msgid = msg.packets[-1][0]
     if msgid not in codec.qmlist.allowed[0]:
@@ -842,18 +856,23 @@ class codec(object):  # not really a class, just a convenient container
   def setvar(msg):
     pos = msg.pos
     if msg.packets[pos-1][1]:
-      msg.pos += 1
       name = msg.packets[pos].tostring().decode('iso_8859_1')
+      pos += 1
     else:
       name = ''
-    args = (name, codec.idtable[msg.packets[pos+1][0]].decoder(msg))
-    return (msg.packets[pos-1][0], args, {})
+    msg.pos = pos + 1
+    args = (name, codec.idtable[msg.packets[pos][0]].decoder(msg))
+    return (ID_SETVAR, args, {})
 
   funcall = Clause(idtable, ID_FUNCALL, ID_SUBCALL)
   @funcall.reader()
   def funcall(msg):
-    getvar(msg)
-    codec.qmlist.reader(msg, 2)
+    packet = np.zeros(msg.packets[-1][1], dtype=np.uint8)
+    if packet.nbytes:
+      msg.packets.append(packet)
+      yield packet
+    for packet in codec.qmlist.reader(msg, 2):
+      yield packet
   @funcall.encoder()
   def funcall(msg, msgid, name, *args, **kwargs):
     getvar(msg, msgid, name)
@@ -874,8 +893,12 @@ class codec(object):  # not really a class, just a convenient container
   getslice = Clause(idtable, ID_GETSLICE)
   @getslice.reader()
   def getslice(msg):
-    getvar(msg)
-    codec.qmlist.reader(msg, 0)
+    packet = np.zeros(msg.packets[-1][1], dtype=np.uint8)
+    if packet.nbytes:
+      msg.packets.append(packet)
+      yield packet
+    for packet in codec.qmlist.reader(msg, 0):
+      yield packet
   @getslice.encoder()
   def getslice(msg, msgid, name, *args):
     getvar(msg, msgid, name)
@@ -895,8 +918,20 @@ class codec(object):  # not really a class, just a convenient container
   setslice = Clause(idtable, ID_SETSLICE)
   @setslice.reader()
   def setslice(msg):
-    getvar(msg)
-    codec.qmlist.reader(msg, 0)
+    packet = np.zeros(msg.packets[-1][1], dtype=np.uint8)
+    if packet.nbytes:
+      msg.packets.append(packet)
+      yield packet
+    for packet in codec.qmlist.reader(msg, 0):
+      yield packet
+    packet = nplongs(0, 0)
+    msg.packets.append(packet)
+    yield packet
+    msgid = msg.packets[-1][0]
+    if msgid not in codec.qmlist.allowed[0]:
+      raise PYorickError("illegal setslice value msgid in reader")
+    for packet in codec.idtable[msgid].reader(msg):
+      yield packet
   @setslice.encoder()
   def setslice(msg, msgid, name, *args):
     getvar(msg, msgid, name)
@@ -921,6 +956,7 @@ class codec(object):  # not really a class, just a convenient container
     allowed = codec.qmlist.allowed[kind]
     while True:
       packet = nplongs(0, 0)
+      msg.packets.append(packet)
       yield packet
       msgid = msg.packets[-1][0]
       if msgid not in allowed:
