@@ -517,12 +517,13 @@ func _pyorick_encode(value)
       if (structof(value) == string) {
         id = 16;
         lens = strlen(value) + 1;
+        dims = dimsof(lens);
         list = where(!value);
         if (numberof(list)) {
-          lens(list) = 0;
+          if (dims(1)) lens(list) = 0;
+          else lens = 0;
           value = value(where(value));
         }
-        dims = dimsof(lens);
       } else {
         id = where(_pyorick_type(*,) == typeof(value));
         if (!numberof(id))
@@ -532,8 +533,8 @@ func _pyorick_encode(value)
         dims = dimsof(value);
       }
       msg = save(_pyorick_id=id, hdr=[id,dims(1)]);
-      if (id == 16) save, msg, lens, value=strchar(value);
-      else save, msg, value;
+      if (id != 16) save, msg, value;
+      else save, msg, lens, value=(is_void(value)?[]:strchar(value));
 
     } else if (is_range(value)) {
       id = _ID_SLICE;
