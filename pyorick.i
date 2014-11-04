@@ -457,22 +457,22 @@ func _pyorick_shape(a)
 {
   id = where(_pyorick_type(*,) == typeof(a));
   if (numberof(id)) {
-    id = grow(id-1, dimsof(a));
+    if (id(1) == 1) id = 9;
+    return grow(id-1, dimsof(a));
   } else if (is_func(a)) {
-    id = -1;
+    return [-1];
   } else if (is_obj(a)) {
     names = a(*,);
-    id = noneof(names)? -2 : (allof(names)? -3 : -8);
+    return [(noneof(names)? -2 : (allof(names)? -3 : -8))];
   } else if (is_range(a)) {
-    id = -4;
+    return [-4];
   } else if (is_void(a)) {
-    id = -5;
+    return [-5];
   } else if (is_stream(a)) {
-    id = -6;
+    return [-6];
   } else {
-    id = -7;
+    return [-7];
   }
-  return id;
 }
 
 func _pyorick_setslice(a, value, ..)

@@ -2,50 +2,96 @@
 """Interface to a yorick process.
 
 yo = Yorick()      start a yorick process
-yo.kill()          kill a yorick process (like kill -9)
+yo.kill()          kill a yorick process
 
-yo("code")         execute code in yorick, return None
-yo("=expr")        execute expr in yorick, return value
-yo.call("code")    execute code in yorick, return None
-yo.eval("expr")    execute expr in yorick, return value
+yo('code')         execute code in yorick, return None
+v = yo('=expr')    execute expr in yorick, return value
 
-yo.value.varname   return value of yorick variable varname
-yo.call.varname    return call-reference to yorick variable varname
-yo.eval.varname    return eval-reference to yorick variable varname
-  The value, call, and eval handles may be abbreviated v, c, and e.
-  If varname is a yorick function or other non-data object,
-  yo.value.varname returns the same call-reference as yo.call.varname.
-yo.value.varname = expr   set value of yorick variable varname
-  Any of the three handles (call, eval, or value) may be used to set varname.
+Three different handles to the yorick process provide a nicer interface:
+  chandle = yo.call    call-semantics handle
+  ehandle = yo.eval    eval-semantics handle
+  vhandle = yo.value   value-semantics handle
+  chandle, ehandle, vhandle = yo.handles(7)
+For interactive use, you may abbreviate yo.call as yo.c, yo.eval as yo.e,
+and yo.value as yo.v.
 
-yo.call.fname(arg1, arg2, ..., key1=kw1, ...)  invoke fname as subroutine
-yo.eval.fname(arg1, arg2, ..., key1=kw1, ...)  invoke fname as function
+Attributes of any handle object represent yorick variables, for example:
+  yo.v.var = <expr>   sets the yorick variable var to the python <expr>
+  yo.v.var            in a python expression gets the yorick variable var
+The three types of handles come into play when the yorick variable is a
+function rather than data, or when you want to refer to data stored in a
+yorick variable without moving the entire array from yorick to python.
 
-yo.eval.aname[index1, index2, ...]         return slice of array aname
-yo.eval.aname[index1, index2, ...] = expr  set slice of array aname
-  The index list uses yorick slice semantics with the eval handle;
-  if you get or set a slice using the call handle, the index list uses
-  python slice semantics.
+Python has only one syntax for invoking functions, whereas yorick has two
+-- one to invoke the function and return its value, the other to invoke
+the function as a subroutine, discarding its value.  The eval-semantics
+handle produces yorick function references which return a value, whereas
+the call-semantics handle produces yorick functions which will be invoked
+as subroutines:
+  yo.e.atan(<expr>)   returns yorick atan(<expr>)
+  yo.c.plg(y, x)      invokes yorick plg,y,x
+You can pass both positional and keyword arguments to either type of
+function reference:
+  yo.c.plg(y, x, color='red')
 
-Given any one of <handle> = value, call, eval, you can retrieve the
-parent Yorick object with yo.<handle>[''], e.g.- yo.call[''].
+Thus, you usually want to use yo.v to set or get array data in yorick
+variables, yo.c to call yorick functions as subroutines (discarding any
+result), yo.e to return a yorick function value, and yo('code') to
+parse yorick code (for example, to define an interpreted function).
+The exception is, when you want to set or get only a part of a yorick
+array, because the whole array is very large and you don't want the
+performance penalty of transmitting the whole thing to or from yorick.
+To do that, use the eval instead of the value handle:
+  yo.e.var[ndx1, ndx2, ...] = <expr>  # set a slice of yorick array var
+  yo.e.var[ndx1, ndx2, ...]           # get a slice of yorick array var
+Each ndxI expression can be a scalar value, a list of integers, or a
+slice start:stop:step.  The index expressions have yorick semantics, not
+numpy semantics, that is: (A) dimension order is fastest varying to
+slowest varying, (B) index origin is 1, and (C) the stop value in a
+slice is included as part of the slice.  If you want numpy index semantics,
+you can use the call handle yo.c.var[ndxlist], and pyorick will swap the
+index order and attempt to fix the index origin and slice stop values.
 
 A few potential yorick variable names cannot be accessed using the
 yo.<handle>.varname syntax (e.g.- __init__).  For these cases, all
 three handles accept a dict-like key:
-  yo.value['varname']   same as yo.value.varname (same for call, eval)
+  yo.v['var']   same as   yo.v.var   (same for yo.c, yo.e handles)
+This feature is useful if the name of the yorick variable is the value
+of a python string variable as well.
 
-Given a yorick variable reference of any type, you can get a different
-type of handle to the same variable by using the value, call, or eval
-attribute (or their abbreviations v, c, e), for example:
-  cvar = yo.call.varname
-  cvar.eval(args)     invoke varname as function
-  cvar.value          get the value of varname
+The call and eval handle attributes return a reference to a yorick variable,
+which doesn't actually communicate with yorick until you do something
+further.  That is, yo.e.var is just a reference to the yorick variable 'var'
+with eval-sematics, while yo.c.var is a reference with call-semantics.
+Variable reference objects implement methods to actually retrieve data
+with yo.e.var(args) or yo.e.var[ndxs].  Note that yorick does not distinguish
+between var(args) and var[ndxs], so they do the same thing in pyorick.
+However, in python, yo.e.var(1:2) is a syntax error, while yo.e.var[1:2]
+is not.  Similarly, python syntax does not permit keywords in index lists,
+nor keywords preceding positional arguments in argument lists.
 
-Yorick variable references also support an info attribute, which returns
-the type and shape of the yorick variable:
-  type, shape = yo.eval.varname.info
-This can be an important query if varname itself is a large array.
+Yorick variable reference objects have several properties:
+  yo.e.var.info     # returns datatype and shape information about var
+  yo.e.var.value    # returns the value of var, like yo.v.var
+  yo.e.var.v        # returns the value of var, like yo.v.var
+In general, you can convert any variable handle sematics to another
+semantics, so yor.e.var.c is a call-semantics reference for var,
+yo.c.var.e is and eval-semantics references, and so on.  Info returns
+a 1D array [typeid, rank, dim1, dim2, ..., dimN] for an array type,
+where typeid is 1, 2, 3 for short, int, long integers, 8 for bytes
+(char in yorick, uint8 in numpy), 5, 6 for float, double reals, 14
+for complex, and 16 for string data.  The dimension lengths are in
+yorick order, fastest to slowest varying in memory.  For non-array
+data, info returns a single element array [typeid], -1 for a function,
+-2 for a list-like anonymous object, -3 for a dict-like object, -4 for
+a slice, -5 for nil, -6 for a file handle, and -7 or -8 for
+other non-representable objects.
+
+An value handle attribute representing a non-data yorick variable, such
+as a function or a file handle, also returns a yorick variable reference
+(after a brief exchange with yorick).  A reference returned by a value
+handle in this way is treated like a call-semantics reference.  Thus,
+yo.v.plg is essentially the same as yo.c.plg.
 
 All yorick array types except pointer and struct instance are valid data.
 A yorick string maps to a python str, but only str which do not contain
@@ -59,10 +105,11 @@ representable data objects maps to an anonymous oxy object in yorick.
 A python dict with str keys maps to a yorick oxy object with named
 members.
 
-yo()               enter yorick terminal mode, special yorick commands are:
-  py                 from yorick terminal mode returns to python
-  py, "code"         from yorick terminal mode to exec code in python
-  py("expr")         from yorick terminal mode to eval expr in python
+Finally, pyorick can turn the python command line into a yorick terminal:
+  yo()          enter yorick terminal mode, special yorick commands are:
+    py            from yorick terminal mode returns to python
+    py, "code"    from yorick terminal mode to exec code in python
+    py("expr")    from yorick terminal mode to eval expr in python
 """
 
 # Attempt to make it work for both python 2.6+ and python 3.x.

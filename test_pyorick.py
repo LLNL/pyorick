@@ -300,7 +300,7 @@ func test(a, b=) {
         self.assertEqual(i.tolist(), [6, 1, 2],
                          'process failed on getshape')
         i = self.yo.eval.test.info
-        self.assertEqual(i, -1, 'process failed on getshape')
+        self.assertEqual(i, [-1], 'process failed on getshape')
 
 if __name__ == '__main__':
     unittest.main()
