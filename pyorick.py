@@ -105,6 +105,14 @@ representable data objects maps to an anonymous oxy object in yorick.
 A python dict with str keys maps to a yorick oxy object with named
 members.
 
+The following special objects are available for use in expressions used
+to set variable values in yorick:
+  ystring0     yorick string(0) is C NULL, different than ""
+  ynewaxis     np.newaxis is None, which yorick interprets as :
+The ystring0 value is also passed back to python to represent a string(0)
+value in yorick.  It is derived from str and has value '' in python.  You
+can check for it with "s is ystring0" if you need to distinguish.
+
 Finally, pyorick can turn the python command line into a yorick terminal:
   yo()          enter yorick terminal mode, special yorick commands are:
     py            from yorick terminal mode returns to python
