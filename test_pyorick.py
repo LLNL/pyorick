@@ -192,7 +192,12 @@ class TestCodec(unittest.TestCase):
                 self.assertEqual(packet.dtype.itemsize,
                                  m.packets[i].dtype.itemsize,
                                  'reader wrong size on ' + em)
-                np.copyto(packet, m.packets[i], casting='safe')
+                # np.copyto(packet, m.packets[i], casting='safe')
+                # following two lines work back to numpy 1.5:
+                self.assertTrue(np.can_cast(m.packets[i].dtype, packet.dtype,
+                                            casting='safe'),
+                                'reader wrong type on '+ em)
+                packet[...] = m.packets[i]
                 i += 1
             self.assertEqual(i, mlen, 'reader stopped early on ' + 
                              str(i)+': '+repr(obj))
