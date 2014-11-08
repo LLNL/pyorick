@@ -215,7 +215,7 @@ class TestProcess(unittest.TestCase):
         self.assertEqual(self.yo("=junk"), 42, 'process failed basic 1')
         self.assertEqual(self.yo.v.junk, 42, 'process failed basic 2')
         self.assertEqual(self.yo.call.junk.v, 42, 'process failed basic 3')
-        self.assertEqual(self.yo.eval("junk"), 42, 'process failed basic 4')
+        self.assertEqual(self.yo.evaluate("junk"), 42, 'process failed basic 4')
         self.assertEqual(self.yo.handles(1), self.yo.call,
                          'process failed basic 5')
         self.assertEqual(self.yo.handles(7), (self.yo.c,self.yo.e,self.yo.v),
@@ -267,7 +267,7 @@ class TestProcess(unittest.TestCase):
     def test_active(self):
         """Check that all requests can be sent and received."""
         # exec, eval, getvar, setvar already tested above
-        x = self.yo.eval.where([1,0,-3])
+        x = self.yo.evaluate.where([1,0,-3])
         self.assertEqual(np.array(x).tolist(), [1,3],
                          'process failed on funcall')
         self.yo("""
@@ -277,7 +277,7 @@ func test(a, b=) {
   return testv;
 }
 """)
-        self.assertEqual(self.yo.eval("test({0}, b={1})", [2,1], 1.5).tolist(),
+        self.assertEqual(self.yo.e("test({0}, b={1})", [2,1], 1.5).tolist(),
                          [0.5, -0.5], 'process failed on formatted eval')
         f = self.yo.value.test
         self.assertTrue(isinstance(f, YorickVar),
@@ -301,10 +301,10 @@ func test(a, b=) {
         self.yo.c.testv[0:] = [3.0, 2.0]
         self.assertEqual(self.yo.v.testv.tolist(), [3.0, 2.0],
                          'process failed on setslice, python semantics')
-        i = self.yo.eval.testv.info
+        i = self.yo.evaluate.testv.info
         self.assertEqual(i.tolist(), [6, 1, 2],
                          'process failed on getshape')
-        i = self.yo.eval.test.info
+        i = self.yo.evaluate.test.info
         self.assertEqual(i, [-1], 'process failed on getshape')
 
 if __name__ == '__main__':

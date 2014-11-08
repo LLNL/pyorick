@@ -8,12 +8,12 @@ yo('code')         execute code in yorick, return None
 v = yo('=expr')    execute expr in yorick, return value
 
 Three different handles to the yorick process provide a nicer interface:
-  chandle = yo.call    call-semantics handle
-  ehandle = yo.eval    eval-semantics handle
-  vhandle = yo.value   value-semantics handle
+  chandle = yo.call      call-semantics handle
+  ehandle = yo.evaluate  eval-semantics handle
+  vhandle = yo.value     value-semantics handle
   chandle, ehandle, vhandle = yo.handles(7)
-For interactive use, you may abbreviate yo.call as yo.c, yo.eval as yo.e,
-and yo.value as yo.v.
+For interactive use, you may abbreviate
+yo.call as yo.c, yo.evaluate as yo.e, and yo.value as yo.v.
 
 Attributes of any handle object represent yorick variables, for example:
   yo.v.var = <expr>   sets the yorick variable var to the python <expr>
@@ -41,7 +41,7 @@ parse yorick code (for example, to define an interpreted function).
 The exception is, when you want to set or get only a part of a yorick
 array, because the whole array is very large and you don't want the
 performance penalty of transmitting the whole thing to or from yorick.
-To do that, use the eval instead of the value handle:
+To do that, use the evaluate instead of the value handle:
   yo.e.var[ndx1, ndx2, ...] = <expr>  # set a slice of yorick array var
   yo.e.var[ndx1, ndx2, ...]           # get a slice of yorick array var
 Each ndxI expression can be a scalar value, a list of integers, or a
@@ -59,9 +59,9 @@ three handles accept a dict-like key:
 This feature is useful if the name of the yorick variable is the value
 of a python string variable as well.
 
-The call and eval handle attributes return a reference to a yorick variable,
-which doesn't actually communicate with yorick until you do something
-further.  That is, yo.e.var is just a reference to the yorick variable 'var'
+The call and evaluate handle attributes return a reference to a yorick
+variable, which doesn't actually communicate with yorick until you use
+it.  That is, yo.e.var is just a reference to the yorick variable 'var'
 with eval-sematics, while yo.c.var is a reference with call-semantics.
 Variable reference objects implement methods to actually retrieve data
 with yo.e.var(args) or yo.e.var[ndxs].  Note that yorick does not distinguish
@@ -160,9 +160,9 @@ class Yorick(object):
   """Interface to a yorick process.
 
   Attributes:
-    call -    call-semantics handle
-    eval -    eval-semantics handle
-    value -   value-semantics handle
+    c or call -     call-semantics handle
+    e or evaluate - eval-semantics handle
+    v or value -    value-semantics handle
 
     Handles are objects whose attributes represent yorick variables.
   """
@@ -201,7 +201,7 @@ class Yorick(object):
         - 4 returns value-semantics handle
         - add to return tuple with up to three handles
     """
-    h = [['call', 'eval', 'value'][i//2] for i in [1, 2, 4] if (which&i)]
+    h = [['call', 'evaluate', 'value'][i//2] for i in [1, 2, 4] if (which&i)]
     if len(h) == 1:
       return getattr(self, h[0])
     else:
@@ -214,7 +214,7 @@ class Yorick(object):
       self._call = YorickHandle(0, self)
     return self._call
   @property
-  def eval(self):
+  def evaluate(self):
     if not self._eval:
       self._eval = YorickHandle(1, self)
     return self._eval
@@ -225,7 +225,7 @@ class Yorick(object):
     return self._value
   # single character abbreviations for interactive use
   c = call
-  e = eval
+  e = evaluate
   v = value
 
   def __call__(self, command=None, *args, **kwargs):  # pipe(command)
@@ -279,7 +279,7 @@ class YorickHandle(object):
 
   def __repr__(self):
     connection = self.__dict__['_yorick__']
-    typ = ['call', 'eval', 'value'][self.__dict__['_reftype__']]
+    typ = ['call', 'evaluate', 'value'][self.__dict__['_reftype__']]
     s = "<yorick {0}-semantics handle to {1}>"
     return s.format(typ, repr(connection.proc)[1:-1])
 
@@ -343,7 +343,7 @@ class YorickVar(object):
 
   def __repr__(self):
     yorick = self.yorick
-    typ = ['call', 'eval'][self.reftype]
+    typ = ['call', 'evaluate'][self.reftype]
     s = "<yorick variable {0} ({1}) in {2}>"
     return s.format(self.name, typ, repr(yorick.proc)[1:-1])
 
@@ -853,20 +853,20 @@ class codec(object):  # not really a class, just a convenient container
   def eol(msg):
     return (ID_EOL, (int(msg.packets[msg.pos-1][1]),), {})
 
-  eval = Clause(idtable, ID_EVAL, ID_EXEC)
-  @eval.reader()
-  def eval(msg):
+  evaluate = Clause(idtable, ID_EVAL, ID_EXEC)
+  @evaluate.reader()
+  def evaluate(msg):
     packet = np.zeros(msg.packets[-1][1], dtype=np.uint8)
     if packet.nbytes:
       yield packet
-  @eval.encoder()
-  def eval(msg, msgid, text):
+  @evaluate.encoder()
+  def evaluate(msg, msgid, text):
     text = np.fromiter(bytearray(text.encode('iso_8859_1')), dtype=np.uint8)
     msg.packets.append(nplongs(msgid, len(text)))
     if len(text):
       msg.packets.append(text)
-  @eval.decoder()
-  def eval(msg):
+  @evaluate.decoder()
+  def evaluate(msg):
     pos = msg.pos
     if msg.packets[pos-1][1]:
       msg.pos += 1
@@ -875,7 +875,7 @@ class codec(object):  # not really a class, just a convenient container
       text = ''
     return (msg.packets[pos-1][0], (text,), {})
 
-  # same as eval, but may want to add name sanity checks someday
+  # same as evaluate, but may want to add name sanity checks someday
   getvar = Clause(idtable, ID_GETVAR, ID_GETSHAPE)
   @getvar.reader()
   def getvar(msg):
@@ -899,7 +899,6 @@ class codec(object):  # not really a class, just a convenient container
       name = ''
     return (msg.packets[pos-1][0], (name,), {})
 
-  # same as eval, but may want to add name sanity checks someday
   setvar = Clause(idtable, ID_SETVAR)
   @setvar.reader()
   def setvar(msg):
@@ -1236,6 +1235,35 @@ def nplongs(*args):
 
 ########################################################################
 
+def find_package_data(name):
+  """See https://wiki.python.org/moin/Distutils/Tutorial"""
+  # Idea: 
+  # The yorick startup script pyorick.i0 is a sibling of pyorick.py,
+  # so that pyorick.i0 is found relative to __file__.
+  # The setup.py packaging script can install pyorick.i0 in this way
+  # by declaring it in package_data.  However, this strategy may
+  # fail for python platforms where packages are placed in zip files
+  # or other non-filesystem places, see PEP 302 and pkgutil.get_data().
+  # The name pyorick.i0 (with a trailing 0) is necessary to prevent
+  # distutils from recognizing the ".i" extension and treating the
+  # file specially.  Note that there may be portability issues relating
+  # to the newline character.
+  # This convention makes it straightforward to install pyorick "by hand"
+  # when distutils cannot be used.
+  try:
+    path = __file__
+    if os.path.islink(path):
+      path = os.path.realpath(path)
+    path = os.path.join(os.path.dirname(os.path.abspath(path)), name)
+  except:
+    path = 'I am-not-a file, am.I'
+  if not os.path.exists(path):
+    raise PYorickError('unable to find '+name)
+  return path
+
+ypathd = "yorick"   # default yorick command
+ipathd = find_package_data("pyorick.i0")  # default pyorick.i0 include file
+
 class Process(object):
   def kill(self):
     raise NotImplementedError("This process does not implement kill.")
@@ -1245,9 +1273,6 @@ class Process(object):
     raise NotImplementedError("This process does not implement interact.")
   def debug(self, on):
     raise NotImplementedError("This process does not implement debug.")
-
-ypathd = "yorick"     # default yorick command
-ipathd = "pyorick.i"  # default pyorick.i include file
 
 class PtyProcess(Process):
   """Process using binary pipes and tty-pty for stdin/out/err."""
