@@ -1539,6 +1539,3 @@ class PipeProcess(Process):
 ProcessDefault = PipeProcess
 
 ########################################################################
-
-# limit names exported by "from pyorick import *"
-__all__ = ['Yorick', 'PYorickError', 'ynewaxis', 'ystring0']
