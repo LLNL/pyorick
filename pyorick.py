@@ -1536,62 +1536,6 @@ class PipeProcess(Process):
     if self._debug and n:
       print("P>send: {0} bytes sent".format(n))
 
-import termios
-
-class PtyProcess(PipeProcess):
-  """Process using binary pipes and tty-pty for stdin/out/err."""
-  def __init__(self, extra, ypath=None, ipath=None):
-    if ypath is None:
-      ypath = ypathd
-    if ipath is None:
-      ipath = ipathd
-    self._debug = self.killing = False
-    argv = [ypath, '-q', '-i', ipath]
-    # complete argv will be:   argv rfd wfd extra
-    ptoy = self.inheritable_pipe(0)
-    ytop = self.inheritable_pipe(1)
-    self.pid, self.pfd = os.forkpty()
-    self.pfdw = self.pfd  # may be useful in derived classes
-    # self.pid = os.fork()
-    if not self.pid:   # subprocess side
-      os.close(ptoy[1])
-      os.close(ytop[0])
-      argv.extend([str(ptoy[0]), str(ytop[1])])
-      if extra:
-        argv.extend(shlex.split(extra))
-      os.execvp(ypath, argv)
-      os._exit(1)            # failed to launch yorick
-    os.close(ptoy[0])
-    os.close(ytop[1])
-    self.rfd = ytop[0]
-    self.wfd = ptoy[1]
-    # set reasonable termios attributes
-    t = termios.tcgetattr(self.pfd)
-    t[3] = t[3] & ~termios.ECHO
-    termios.tcsetattr(self.pfd, termios.TCSANOW, t)
-    # put yorick into interactive mode (no batch mode support)
-    reply = Message()
-    self.reqrep(Message(ID_EXEC, "pyorick, 1;"), reply, True)
-
-  def kill(self, dead=False):
-    if self.pid is not None and not self.killing:
-      self.killing = True
-      try:
-        if not dead:
-          self.send0("\nquit;")
-          time.sleep(0.001)
-          self.echo_pty()
-        os.close(self.pfd)
-      finally:
-        try:
-          os.close(self.rfd)
-          os.close(self.wfd)
-        finally:
-          os.waitpid(self.pid, 0)   # otherwise yorick becomes a zombie
-          self.kill(True)
-    self.pid = self.pfd = self.pfdw = self.rfd = self.wfd = None
-    self._debug = False
-
 ProcessDefault = PipeProcess
 
 ########################################################################
