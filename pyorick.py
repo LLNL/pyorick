@@ -143,16 +143,18 @@ else:
 
 import numpy as np
 
-import os
-import shlex
-import termios
-import fcntl
-import select
 from numbers import Number
 from collections import Sequence, Mapping
 from ctypes import (c_byte, c_ubyte, c_short, c_ushort, c_int, c_uint,
                     c_long, c_ulong, c_longlong, c_ulonglong,
                     c_float, c_double, c_longdouble, sizeof)
+import os
+import shlex
+import fcntl
+import select
+
+import subprocess
+import time
 
 ########################################################################
 
@@ -1265,7 +1267,7 @@ ypathd = "yorick"   # default yorick command
 ipathd = find_package_data("pyorick.i0")  # default pyorick.i0 include file
 
 class Process(object):
-  def kill(self):
+  def kill(self, dead=False):
     raise NotImplementedError("This process does not implement kill.")
   def reqrep(self, request, reply):
     raise NotImplementedError("This process does not implement reqrep.")
@@ -1274,8 +1276,8 @@ class Process(object):
   def debug(self, on):
     raise NotImplementedError("This process does not implement debug.")
 
-class PtyProcess(Process):
-  """Process using binary pipes and tty-pty for stdin/out/err."""
+class PipeProcess(Process):
+  """Process using subprocess, binary pipes, and stdin/out/err pipes."""
   def __init__(self, extra, ypath=None, ipath=None):
     if ypath is None:
       ypath = ypathd
@@ -1286,24 +1288,27 @@ class PtyProcess(Process):
     # complete argv will be:   argv rfd wfd extra
     ptoy = self.inheritable_pipe(0)
     ytop = self.inheritable_pipe(1)
-    self.pid, self.pfd = os.forkpty()
-    # self.pid = os.fork()
-    if not self.pid:   # subprocess side
-      os.close(ptoy[1])
-      os.close(ytop[0])
-      argv.extend([str(ptoy[0]), str(ytop[1])])
-      if extra:
-        argv.extend(shlex.split(extra))
-      os.execvp(ypath, argv)
-      os._exit(1)            # failed to launch yorick
+    argv.extend([str(ptoy[0]), str(ytop[1])])
+    if extra:
+      argv.extend(shlex.split(extra))
+    self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT,
+                                 close_fds=False)
+    # also consider:
+    # universal_newlines=True
+    # preexec_fn=function(closure?) of no arguments to close ptoy[1], ytop[0]
+    #  (unix only), see functools.partial
+    # creationflags=CREATE_NEW_PROCESS_GROUP to be able to send CTRL_C_EVENT
+    #  (windows only)
     os.close(ptoy[0])
     os.close(ytop[1])
     self.rfd = ytop[0]
     self.wfd = ptoy[1]
-    # set reasonable termios attributes
-    t = termios.tcgetattr(self.pfd)
-    t[3] = t[3] & ~termios.ECHO
-    termios.tcsetattr(self.pfd, termios.TCSANOW, t)
+    self.pid = self.proc.pid
+    self.pfdw = self.proc.stdin.fileno()
+    self.pfd = self.proc.stdout.fileno()
+    self.killing = False
     # put yorick into interactive mode (no batch mode support)
     reply = Message()
     self.reqrep(Message(ID_EXEC, "pyorick, 1;"), reply, True)
@@ -1311,16 +1316,31 @@ class PtyProcess(Process):
   def __del__(self):
     self.kill()
 
-  def kill(self):
-    if self.pid is not None:
+  def kill(self, dead=False):
+    if self.proc is not None and not self.killing:
+      self.killing = True
       try:
-        os.close(self.pfd)
-        os.close(self.rfd)
-        os.close(self.wfd)
-        os.waitpid(self.pid, 0)   # otherwise yorick becomes a zombie
+        if not dead:
+          self.send0("\nquit;")
+          time.sleep(0.001)
+          self.echo_pty()
+        self.proc.stdin.close()  # EOF on stdin also causes yorick to quit
+        i = 0
+        while self.proc.poll() is None:
+          time.sleep(0.001)
+          i += 1
+          if i > 4:
+            self.proc.kill()
+            break
       finally:
-        self.pid = self.pfd = self.rfd = self.wfd = None
-        self._debug = False
+        try:
+          os.close(self.rfd)
+          os.close(self.wfd)
+        finally:
+          self.kill(True)
+    self.proc = None
+    self.pid = self.pfdw = self.pfd = self.rfd = self.wfd = None
+    self._debug = False
 
   def debug(self, on=None):
     if on is None:
@@ -1353,8 +1373,12 @@ class PtyProcess(Process):
       raise PYorickError("failed to receive complete message, yorick killed")
     if self._debug:
       print("P>reqrep: reply="+str(reply.packets[0]))
-    # not finished until yorick comes back to its prompt
-    self.wait_for_prompt()
+    if reply.packets[0][0]==ID_EOL and reply.packets[0][1]==-1:
+      self.kill(True)
+      reply.packets[0][0] = ID_NIL
+    else:
+      # not finished until yorick comes back to its prompt
+      self.wait_for_prompt()
 
   def interact(self, server):
     self.echo_pty()  # flush out any pending output
@@ -1381,6 +1405,9 @@ class PtyProcess(Process):
         elif self.pfd in p[0]:
           # only get here when no more requests on rfd
           prompt = self.echo_pty()
+          if prompt == 'PYORICK-QUIT> ':
+            self.kill(True)
+            return
           if prompt:  # pass along prompt and wait for user to respond
             self.send0(raw_input(prompt))
       except KeyboardInterrupt:
@@ -1417,8 +1444,11 @@ class PtyProcess(Process):
         except:
           p = (0, 0, 1)
       if p[2]:
-        self.kill()
-        raise PYorickError("Read or select error on pty, yorick killed.")
+        if not self.killing:
+          self.kill()
+          raise PYorickError("Read or select error on pty, yorick killed.")
+        else:
+          break
       if not p[0]:
         i += 1
     prompt = None
@@ -1430,8 +1460,11 @@ class PtyProcess(Process):
         s = s[0:i]
       if s:
         print(s, end='')  # terminal newline already in s
-    if self._debug and prompt:
-      print("P>echo_pty: prompt="+prompt)
+    if prompt:
+      if self._debug:
+        print("P>echo_pty: prompt="+prompt)
+      if prompt == 'PYORICK-QUIT> ' and not self.killing:
+        self.kill(True)
     return prompt
 
   def send0(self, text, nolf=False):
@@ -1444,13 +1477,13 @@ class PtyProcess(Process):
       n = 0
       while n < len(text):
         try:
-          n += os.write(self.pfd, text[n:].encode('iso_8859_1'))
+          n += os.write(self.pfdw, text[n:].encode('iso_8859_1'))
         except UnicodeEncodeError:
           print("<--- did not send non-ISO-8859-1 text to yorick --->")
           text = '\n'
           n = 0
         except:
-          self.kill()
+          self.kill(True)
           raise PYorickError("Unable to write to yorick stdin, yorick killed.")
 
   # See PEP 433.  After about Python 3.3, pipes are close-on-exec by default.
@@ -1503,11 +1536,63 @@ class PtyProcess(Process):
     if self._debug and n:
       print("P>send: {0} bytes sent".format(n))
 
-ProcessDefault = PtyProcess
+import termios
 
-class PipeProcess(PtyProcess):
-  """Process using subprocess, binary pipes, and stdin/out/err pipes."""
-  pass
+class PtyProcess(PipeProcess):
+  """Process using binary pipes and tty-pty for stdin/out/err."""
+  def __init__(self, extra, ypath=None, ipath=None):
+    if ypath is None:
+      ypath = ypathd
+    if ipath is None:
+      ipath = ipathd
+    self._debug = self.killing = False
+    argv = [ypath, '-q', '-i', ipath]
+    # complete argv will be:   argv rfd wfd extra
+    ptoy = self.inheritable_pipe(0)
+    ytop = self.inheritable_pipe(1)
+    self.pid, self.pfd = os.forkpty()
+    self.pfdw = self.pfd  # may be useful in derived classes
+    # self.pid = os.fork()
+    if not self.pid:   # subprocess side
+      os.close(ptoy[1])
+      os.close(ytop[0])
+      argv.extend([str(ptoy[0]), str(ytop[1])])
+      if extra:
+        argv.extend(shlex.split(extra))
+      os.execvp(ypath, argv)
+      os._exit(1)            # failed to launch yorick
+    os.close(ptoy[0])
+    os.close(ytop[1])
+    self.rfd = ytop[0]
+    self.wfd = ptoy[1]
+    # set reasonable termios attributes
+    t = termios.tcgetattr(self.pfd)
+    t[3] = t[3] & ~termios.ECHO
+    termios.tcsetattr(self.pfd, termios.TCSANOW, t)
+    # put yorick into interactive mode (no batch mode support)
+    reply = Message()
+    self.reqrep(Message(ID_EXEC, "pyorick, 1;"), reply, True)
+
+  def kill(self, dead=False):
+    if self.pid is not None and not self.killing:
+      self.killing = True
+      try:
+        if not dead:
+          self.send0("\nquit;")
+          time.sleep(0.001)
+          self.echo_pty()
+        os.close(self.pfd)
+      finally:
+        try:
+          os.close(self.rfd)
+          os.close(self.wfd)
+        finally:
+          os.waitpid(self.pid, 0)   # otherwise yorick becomes a zombie
+          self.kill(True)
+    self.pid = self.pfd = self.pfdw = self.rfd = self.wfd = None
+    self._debug = False
+
+ProcessDefault = PipeProcess
 
 ########################################################################
 

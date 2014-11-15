@@ -3,8 +3,8 @@
  */
 
 /* This script normally runs from the command line:
- *   yorick -i pyorick.i RFD WFD ...
- *   yorick -batch pyorick.i RFD WFD ...
+ *   yorick -i pyorick.i0 RFD WFD ...
+ *   yorick -batch pyorick.i0 RFD WFD ...
  * where
  *   RFD is the read file descriptor number and
  *   WFD is the write file descriptor number
@@ -650,4 +650,15 @@ if (is_void(_pyorick_rfd)) {
       pyorick, 0;
     }
   }
+}
+
+if (is_void(_pyorick_quit)) _pyorick_quit = quit;
+func quit(void)
+{
+  /* send to both stdout and wfd in case parent blocked on either */
+  write, format="\n%s", "PYORICK-QUIT> ";
+  if (!is_void(_pyorick_wfd)) _pyorick_send, [_ID_EOL, -1];
+  fd_close, _pyorick_wfd;
+  fd_close, _pyorick_rfd;
+  _pyorick_quit;
 }
