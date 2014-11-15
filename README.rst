@@ -11,6 +11,7 @@ Features:
 - get or set yorick variables
 - call yorick functions or subroutines with python arguments
 - get or set slices of large yorick arrays
+- terminal mode to interact with yorick by keyboard through python
 
 Most of the data is exchanged via binary pipes between the two
 interpreters.  Yorick runs in a request-reply mode.  Python prints

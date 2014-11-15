@@ -9,220 +9,144 @@ plus a simpler interface.
 Simplified interface
 --------------------
 
-You interact with yorick via two interface handles, returned by the
-yorick() function:
+You can launch yorick as a subprocess with:
 
   from pyorick import *
-  yo, oy = yorick()
+  yo = Yorick()
 
-The yo and oy handles are class instances with overloaded call,
-getattr, and setattr methods.  The handles do similar, but not
-identical things.  For example, the simplest interactions with yorick
-are from the call methods:
+To kill a running yorick, do this:
 
-``yo("yorick code")``
-  Send the "yorick code" string to yorick for parsing and execution.
+  yo.kill()
 
-``value = oy("yorick expression")``
-  Send the "yorick execution" string to yorick for parsing and execution,
-  returning the resulting value.
+You can execute yorick code, or evaluate a yorick expression like this:
 
-The yo() call expects a complete yorick statement that returns no
-result; it may consist of multiple lines, but if you typed it to
-yorick, it must not result in a "cont>" continuation prompt.  The oy()
-call must be a complete yorick expression; again it may consist of
-multiple lines, but it must be a legal yorick statement with "value="
-prepended.  In the case of yo(), the yorick code executes, but returns
-no value to python.  The oy() call returns an expression value.
+  yo('code')
+  v = yo('=expr')
 
-The getattr and setattr methods are the workhorses of the interface:
+However, the main way to interact with yorick is through one of three
+handles:
 
-``yo.varname = expression``
-  Set the yorick variable "varname" to the python expression.
+  chandle = yo.call
+  ehandle = yo.evaluate
+  vhandle = yo.value
 
-``yo.varname``
-  Return the value of the yorick variable "varname" to python.  If
-  varname is any numeric, string, or oxy object data, the data is
-  actually sent to python.  If varname is a function or a file handle
-  or any other non-data object, returns a yorick reference object,
-  discussed below.
+These may be abbreviated to their first character: yo.c for yo.call, or
+yo.e for yo.evaluate, or yo.v for yo.value.
 
-``oy.varname``
-  Return a yorick reference object, discussed below.  Unlike yo.varname,
-  nothing is sent to or returned from yorick.  Setting an attribute using
-  the oy handle, oy.varname = expression, is the same as for the yo handle.
+Attributes of any of the three handle objects represent yorick
+variables.  Use the value handle to immediately set or get a whole
+variable values from yorick:
 
-There are two types of yorick reference objects: yo.varname returns a
-subroutine-like reference, while oy.varname returns a function-like
-reference.  The yorick reference objects have overloaded call,
-getitem, and setitem methods.  You use the call methods to invoke
-yorick functions:
+  yo.v.varname = <expr, any python expression>
+  yo.v.varname
 
-``yo.yfunction(arg1, arg2, key1=karg1, ...)``
-  Call yorick function "yfunction" as a subroutine with the specified
-  argument list.
+The data passed to yorick by setting an attribute, or retrieved from
+yorick by getting an attribute can be any numeric or string scalar or
+array, or an index range (slice in python), or nil (None in python),
+or an oxy object whose members are all supported data types.  The oxy
+object in yorick will be a list in python if all its members are
+anonymous, and a dict in python if all its members have names.  Yorick
+numeric scalars or arrays become python numpy arrays.  Yorick scalar
+strings become python unicode strings, while yorick arrays of strings
+become nested lists of python unicode strings.  Yorick strings are
+encoded and decoded as iso_8859_1 python character sequences, and only
+the part of a python string up to the first ``'0x00'`` character, if
+any, is transmitted to yorick.  Yorick struct instances and pointers
+are unsupported, as are python class instances.
 
-``value = oy.yfunction(arg1, arg2, key1=karg1, ...)``
-  Call yorick function "yfunction" as a function with the specified
-  argument list, returning its result to python.
+The call and evaluate handles are primarily intended for referring to
+yorick functions.  Unlike python, yorick has two syntaxes for invoking
+functions:
 
-Once again, you use the yo handle if you want to discard (and not
-transfer) any return value, while you use the oy handle to return a
-function value.  Unlike python, yorick functions may be specifically
-invoked as subroutines, and some functions (e.g.- save) behave
-differently when called as subroutines than when called as functions.
-Since python has no equivalent distinctions, you distinguish the two
-cases by using the appropriate handle.
+  funcname, arglist
+  funcname(arglist)
 
-In either form, you may pass oy.varname as an argument to use that
-yorick variable as the argument.  This is important for later
-retrieving yorick output arguments.  It also avoids the round-trip
-data passing you would incur by passing yo.varname as an argument.
-Note that you may pass keyword arguments as well as positional
-arguments.
+The first form invokes funcname as a subroutine, discarding any return
+value, while the second invokes funcname as a function, returning its
+value.  Yorick functions frequently have return values, even if they
+are usually intended to be invoked as subroutines.  Hence, a python
+interface to yorick needs separate call and evaluate handles to allow
+for the fact that python has only a single syntax for invoking a
+function.  Thus,
 
-Finally, with the yorick reference object getitem and setitem methods,
-you can retrieve or set slices of large arrays:
+  yo.c.funcname(arglist)
 
-``oy.yarray[index1, index2, ...]``
-  Return the specified slice of the yorick array "yarray".  Note that
-  the indices are in yorick order (fastest varying first) rather than
-  the default numpy order.  Also, any index which is a slice min:max
-  or min:max:inc is interpreted according to yorick indexing semantics
-  (1-origin, with max inclusive).  An Ellipsis index is translated
-  to the yorick .. index.  However, if you need the numpy.newaxis,
-  which translates to yorick's - index, you must pass the pyorick new_axis
-  instead.  That is because numpy.newaxis is a synonym for None, which
-  pyorick translates to yorick's nil [], which in turn means the full
-  range of the index (equivalent to : in python).
+invokes the yorick funcname as a subroutine, discarding any return value,
+while
 
-``oy.yarray[index1, index2, ...] = expression``
-  Set the specified slice of the yorick array "yarray".  Again, the
-  indices are interpreted in a yorick-like manner.
+  yo.e.funcname(arglist)
 
-Because a yorick array cannot have an associated exec yorick reference
-object, ``yo.yarray[index1, index2, ...]`` is very different than
-``oy.yarray[index1, index2, ...]``.  Python immediately retrieves the
-entire yo.yarray value as a numpy array, so the indices will be
-interpreted according to python semantics.  If you want python slicing
-semantics, and you need to avoid transferring the whole array to
-python before slicing, you can use the python-like reference objects
-available in the full interface.
+invokes the yorick funcname as a function, returning its value.  The
+arglist may include either positional or keyword arguments or both:
 
-Full interface
---------------
+  yo.c.plg(y, x, color='red')
+  4 * yo.e.atan(1)
 
-The full interface may be conceptually simpler than the simplified
-interface, but as a user you need to type slightly more.  The principal
-object in the full interface is the yorick connection object:
+The evaluate and call handle attributes do not communicate with yorick
+(unlike the value handle attributes, which do).  Instead, they return
+references to yorick variables.  Thus, yo.c.plg is a call-semantics
+reference to the yorick variable plg, while yo.e.atan is an
+eval-semantics handle to the yorick variable atan.  The communication
+with yorick only occurs when you call the reference, as in the examples.
 
-yc = Yorick()
+Variable references can be useful for data variables as well as for
+function variables.  In particular, you may want to query the data
+type and shape of a variable without actually transferring its data.
+Or, if you know a variable is large, you may want to set or get only a
+slice, without transferring the entire array.  You can do those things
+with an eval-sematics handle instead of a value-semantics handle:
 
-In the simplified interface, the underlying connection for the yo and oy
-handles is the _yorick attribute, yo._yorick or oy._yorick.
+  yo.e.varname.info
+  yo.e.varname[indexlist] = <expr>
+  yo.e.varname[indexlist]
 
-Each instance of Yorick represents a different yorick process.  A
-Yorick instance directly exposes all of the command and transfer
-methods available:
+The info property is an integer array with info[0] a data type code,
+and for array types info[1] is the rank, and info[2:2+rank] are the
+dimension lengths in yorick order.  The indexlist also has yorick
+index semantics (first index varies fastest in memory, 1-origin
+indices, slices include their stop value).  The call handle attempts
+to convert indexlist from python index list semantics (first index
+slowest, 0-origin, slice stop non-inclusive) in
+yo.c.varname[indexlist], but you are better off sticking with yorick
+semantics if you possibly can.  Finally, you can read the whole value
+from a reference using:
 
-``yc.kill()``
-  Close the connection, and reap the child yorick process.
+  yo.e.varname.value
+  yo.e.varname.v
 
-``yc("code")``
-  Parse and execute the yorick code, returning None.
+In general, you can switch from any type of reference to any other by
+getting the c, e, or v (or call, evaluate, or value) attribute.  For
+example, yo.e.varname.c is the same as yo.c.varname.
 
-``yc("=expr")``
-  Parse and execute the yorick expression, returning its value.
+A few attribute names are reserved for use by python (e.g.- __init__),
+and so cannot be accessed.  If you need them, you can use the
+alternate syntax yo.e['funcname'] or yo.c['funcname'] or
+yo.v['varname'] wherever you wanted yo.e.funcname, etc.  This syntax
+is also useful when the yorick variable name is the value of a python
+variable.  As a special case, an empty string item of any handle
+returns the original top-level yorick process object.  For example,
+yo.v[''] returns yo.
 
-``yc.getvar(name)``
-  Return value of yorick name variable.
+Two special objects can be used in data or arguments passed to yorick:
 
-``yc.setvar(name, value)``
-  Set value of yorick name variable, returning None.
+  ystring0
+  ynewaxis
 
-``yc.funcall(name, arg1, arg2, key1=karg1, ...)``
-  Return value of yorick name as function with given arguments.
+The former looks like '' to python, but will be interpreted as
+string(0) (as opposed to "") in yorick.  The latter is the yorick
+pseudo-index -, which is np.newaxis in python.  Unfortunately,
+np.newaxis is None in python, which is [] in yorick, and interpreted
+as : in the context of an index list.
 
-``yc.subcall(name, arg1, arg2, key1=karg1, ...)``
-  Call yorick name as subroutine with given arguments, returning None.
+Lastly, pyorick can turn python into a terminal emulator for yorick:
 
-``yc.getslice(name, reftype, index1, index2, key1=kindex1, ...)``
-  Return value of slice of yorick name array.  With reftype=1, the
-  index list is interpreted according to yorick semantics (fastest
-  varying first, 1-origin, slice max inclusive); with reftype=2, the
-  index list is interpreted according to python semantics.
+  yo()
 
-``yc.setslice(name, reftype, index1, index2, key1=kindex1, ...)``
-  Set value of slice of yorick name array, returning None.  The
-  reftype determines whether the index list is interpreted according
-  to yorick (1) or python (2) semantics, as for getslice.
+returns a yorick prompt, at which you can type arbitrary yorick commands.
+The py function in yorick returns you to the python prompt if invoked as
+a subroutine, or execs or evals python code if passed a string:
 
-``yc.getshape(name)``
-  Return (type, shape) for yorick name variable without retrieving its value.
-  The shape is a tuple matching the ndarray shape.  For strings, which become
-  nested lists in python, type=1 and shape is the shape tuple it would have
-  if converted to an ndarray.  For anything else, shape is None and type is
-  a small integer: 2 func, 3 list, 4 dict, 5 slice, 6 None, 7 binary file,
-  and 8 or 9 something else.
-
-``yc.setdebug(on)``
-  Turn debug mode on or off.  Debug mode generates lots of output.
-
-``yc.setmode(interactive)``
-  Turn interactive mode on or off.  By default, yorick starts in interactive
-  mode.  Batch mode will probably confuse you; it's for experts.
-
-These methods require typing quotes around the name argument for the
-get/setvar, fun/subcall, get/setslice, or getshape functions.  To
-avoid that, the yorick connection instance provides three attributes
-that overload the getattr, setattr, and call methods:
-
-``yc.v``
-  The "by value" interface.  This is the yo object in the simple interface.
-
-``yc.r``
-  The "by reference" interface.  This is the oy object in the simple interface.
-
-``yc.p``
-  The "by reference, python indexing semantics" interface.
-
-Hence, ``yc.v.varname`` is the same thing as ``yo.varname``, and
-``yc.r.varname`` is the same thing as ``oy.varname``.  There is no
-equivalent to ``yc.p.varname`` in the simplified interface.  However,
-all reference objects have several methods of their own, and
-``oy.varname.p()`` returns ``yc.p.varname``.  All of the variable
-reference objects have the following methods:
-
-``varref(arg1, arg2, key1=karg1, ...)``
-  Calls the yorick variable with the given arguments.  The yc.v by value
-  varref invokes the variable as a subroutine returning None.  The
-  yc.r by reference varref invokes the variable as a function, returning
-  its result.  Finally, the yc.p varref invokes the variable as a
-  subroutine, returning None, the same as yc.v.  However, with yc.p,
-  you avoid a round trip to yorick -- ``yc.v.varname`` gets the
-  reference back from yorick before the call, while ``yc.p.varname``
-  does not talk to yorick at all.
-
-``varref[index1, index2, ...]``
-  Returns the specified slice of the yorick variable.  With a yc.r varref,
-  the index semantics are yorick's, for the other two, the index semantics
-  are python's.
-
-``varref[index1, index2, ...] = <expr>``
-  Sets the specified slice of the yorick variable.  With a yc.r varref,
-  the index semantics are yorick's, for the other two, the index semantics
-  are python's.
-
-``type, shape = varref.info()``
-  Returns the type and shape information about the yorick variable, without
-  transferring its value.  Same as ``yc.getshape(name)`` above.
-
-``varref.p()``
-  Returns a varref referring to the same variable, but of type yc.p.
-
-``varref.y()``
-  Returns a varref referring to the same variable, but of type yc.r.
-  (The y means "yorick semntics".)
-
-Note that these varref methods are all equally available in the
-simplified interface.
+  py;
+  py, "python code";
+  py, ["python code line 1", "python code line 2", ...];
+  py("python expression")
