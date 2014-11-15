@@ -13,8 +13,8 @@ setup(name='pyorick',
       # have pyorick.i0 installed as sibling of pyorick.py
       #py_modules=['pyorick'],
       #data_files=[('no-universal-place', ['pyorick.i0'])],
-      packages=[''],
-      package_data={'': ['pyorick.i0']},
+      packages=['pyorick'],
+      package_data={'pyorick': ['pyorick/pyorick.i0']},
       license='BSD New',
       classifiers=[
         'License :: OSI Approved :: BSD License',
