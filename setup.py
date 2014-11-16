@@ -2,6 +2,15 @@
 
 from distutils.core import setup
 
+# This package requires the yorick startup file pyorick.i0 to be
+# installed as an ordinary file in the same directory as pyorick.py.
+# Even if you have no way to install python packages, you can
+# make pyorick.py work by creating a directory, copying pyorick.py
+# and pyorick.i0 to that directory, and adding the directory to
+# your PYTHONPATH environment variable.  You can optionally copy
+# test_pyorick.py to the same directory, cd there, and run nosetests
+# or py.test or python -m unittest -v test_pyorick to test pyorick.
+
 setup(name='pyorick',
       version='1.0',
       description='python connection to yorick',
