@@ -1,8 +1,8 @@
 # pyorick.py
 # Copyright (c) 2014, David H. Munro and John E. Field
 # All rights reserved.
-# This is Open Source software, released under the BSD 3-clause license,
-# see http://opensource.org/licenses/BSD-3-Clause for details.
+# This is Open Source software, released under the BSD 2-clause license,
+# see http://opensource.org/licenses/BSD-2-Clause for details.
 
 """Interface to a yorick process.
 
