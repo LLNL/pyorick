@@ -564,7 +564,7 @@ class Message(object):
 
   def decode(self):
     if not self.packets:
-      PYorickError("cannot decode empty message")
+      raise PYorickError("cannot decode empty message")
     self.pos = 1  # pos=0 already processed here
     return codec.idtable[self.packets[0][0]].decoder(self)
 
@@ -705,7 +705,7 @@ class codec(object):  # not really a class, just a convenient container
   @staticmethod
   def reader(msg):
     if msg.packets:
-      PYorickError("attempt to read into non-empty message")
+      raise PYorickError("attempt to read into non-empty message")
     packet = nplongs(0, 0)
     msg.packets.append(packet)
     yield packet
@@ -1199,7 +1199,7 @@ class codec(object):  # not really a class, just a convenient container
         k = 'u'
       k += str(value.dtype.itemsize)
       if k not in id_typtab:
-        PYorickError("cannot encode unsupported array numeric dtype")
+        raise PYorickError("cannot encode unsupported array numeric dtype")
       msgid = id_typtab[k]
       if not value.flags['CARRAY']:
         value = np.copy(value, 'C')
@@ -1372,6 +1372,8 @@ class PipeProcess(Process):
       self._debug = on
 
   def reqrep(self, request, reply, supress=False):
+    if self.pid is None:
+      raise PYorickError("no yorick process running")
     self.echo_pty()  # flush any pending output
     if not supress:
       self.send0("pyorick;")  # tell yorick to read pipe for request
@@ -1401,6 +1403,8 @@ class PipeProcess(Process):
       self.wait_for_prompt()
 
   def interact(self, server):
+    if self.pid is None:
+      raise PYorickError("no yorick process running")
     self.echo_pty()  # flush out any pending output
     server.start()
     self.send0("pyorick, -1;")  # tell yorick to enter terminal mode
@@ -1449,7 +1453,7 @@ class PipeProcess(Process):
 
   def echo_pty(self):
     """Print yorick stdout/stderr, returning final prompt if any."""
-    if not self.pfd:
+    if self.pfd is None:
       return None
     s = ''
     i = 0    # curiously hard to get reply promptly?
@@ -1488,7 +1492,7 @@ class PipeProcess(Process):
     return prompt
 
   def send0(self, text, nolf=False):
-    if self.pfd:
+    if self.pfd is not None:
       if not nolf:
         if not text.endswith('\n'):
           text += '\n'
@@ -1520,7 +1524,7 @@ class PipeProcess(Process):
   def recv(self, packet):
     """Read numpy array packet from self.rfd."""
     # other interfaces are readinto, copyto, frombuffer, getbuffer
-    if not self.rfd:
+    if self.rfd is None:
       return None   # some fatal exception has already occurred
     # note: packet.data[n:] fails in python 3.4 if packet is scalar
     xx = packet.reshape(packet.size).view(dtype=np.uint8)
@@ -1539,7 +1543,7 @@ class PipeProcess(Process):
 
   def send(self, packet):
     """Write numpy array packet to self.wfd."""
-    if not self.wfd:
+    if self.wfd is None:
       return None   # some fatal exception has already occurred
     # note: packet.data[n:] fails in python 3.4 if packet is scalar
     pp = packet.reshape(packet.size).view(dtype=np.uint8)
