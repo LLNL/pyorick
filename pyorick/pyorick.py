@@ -1,4 +1,9 @@
 # pyorick.py
+# Copyright (c) 2014, David H. Munro and John E. Field
+# All rights reserved.
+# This is Open Source software, released under the BSD 3-clause license,
+# see http://opensource.org/licenses/BSD-3-Clause for details.
+
 """Interface to a yorick process.
 
 yo = Yorick()      start a yorick process
@@ -134,12 +139,7 @@ import sys
 if sys.version_info[0] >= 3:
   basestring = str    # need basestring for 2.x isinstance tests for string
   xrange = range      # only use xrange where list might be large
-  def _iteritems(d):  # only use iteritems when dict might be large
-    return d.items()
   raw_input = input
-else:
-  def _iteritems(d):
-    return d.iteritems()
 
 import numpy as np
 
