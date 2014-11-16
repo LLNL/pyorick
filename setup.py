@@ -9,12 +9,8 @@ setup(name='pyorick',
       author='David Munro and John Field',
       author_email='dhmunro@users.sourceforge.net',
       url='https://github.com/dhmunro/pyorick',
-      # py_modules more appropriate, but can't figure out how to
-      # have pyorick.i0 installed as sibling of pyorick.py
-      #py_modules=['pyorick'],
-      #data_files=[('no-universal-place', ['pyorick.i0'])],
       packages=['pyorick'],
-      package_data={'pyorick': ['pyorick/pyorick.i0']},
+      package_data={'pyorick': ['pyorick.i0']},
       license='BSD New',
       classifiers=[
         'License :: OSI Approved :: BSD License',
