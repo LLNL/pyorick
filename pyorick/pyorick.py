@@ -409,6 +409,26 @@ class YorickVar(object):
   # single character alias for interactive use
   v = value
 
+  @property
+  def call(self):
+    """Implement handle.name.call."""
+    if self.reftype:
+      return YorickVarDerived(self.yorick, False, self.name)
+    else:
+      return self
+  # single character alias for interactive use
+  c = call
+
+  @property
+  def evaluate(self):
+    """Implement handle.name.evaluate."""
+    if not self.reftype:
+      return YorickVarDerived(self.yorick, True, self.name)
+    else:
+      return self
+  # single character alias for interactive use
+  e = evaluate
+
 # Hook for packages (like a lazy evaluator) to customize YorickVar;
 # YorickVarDerived is the object a YorickHandle uses.
 # The YorickVarDerived class must be a derived class of YorickVar.
