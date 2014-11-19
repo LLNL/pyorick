@@ -22,6 +22,7 @@ develop-eggs/
 *.spec
 pip-log.txt
 pip-delete-this-directory.txt
+MANIFEST
 
 # python unit testing
 htmlcov/
