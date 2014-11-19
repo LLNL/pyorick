@@ -20,6 +20,7 @@ setup(name='pyorick',
       url='https://github.com/dhmunro/pyorick',
       packages=['pyorick'],
       package_data={'pyorick': ['pyorick.i0']},
+      requires=['numpy'],
       license='BSD 2-Clause',
       classifiers=[
         'License :: OSI Approved :: BSD License',
