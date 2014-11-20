@@ -11,24 +11,24 @@ Simplified interface
 
 You can launch yorick as a subprocess with:
 
-  from pyorick import *
-  yo = Yorick()
+    from pyorick import *
+    yo = Yorick()
 
 To kill a running yorick, do this:
 
-  yo.kill()
+    yo.kill()
 
 You can execute yorick code, or evaluate a yorick expression like this:
 
-  yo('code')
-  v = yo('=expr')
+    yo('code')
+    v = yo('=expr')
 
 However, the main way to interact with yorick is through one of three
 handles:
 
-  chandle = yo.call
-  ehandle = yo.evaluate
-  vhandle = yo.value
+    chandle = yo.call
+    ehandle = yo.evaluate
+    vhandle = yo.value
 
 These may be abbreviated to their first character: yo.c for yo.call, or
 yo.e for yo.evaluate, or yo.v for yo.value.
@@ -37,8 +37,8 @@ Attributes of any of the three handle objects represent yorick
 variables.  Use the value handle to immediately set or get a whole
 variable values from yorick:
 
-  yo.v.varname = <expr, any python expression>
-  yo.v.varname
+    yo.v.varname = <expr, any python expression>
+    yo.v.varname
 
 The data passed to yorick by setting an attribute, or retrieved from
 yorick by getting an attribute can be any numeric or string scalar or
@@ -58,8 +58,8 @@ The call and evaluate handles are primarily intended for referring to
 yorick functions.  Unlike python, yorick has two syntaxes for invoking
 functions:
 
-  funcname, arglist
-  funcname(arglist)
+    funcname, arglist
+    funcname(arglist)
 
 The first form invokes funcname as a subroutine, discarding any return
 value, while the second invokes funcname as a function, returning its
@@ -69,18 +69,18 @@ interface to yorick needs separate call and evaluate handles to allow
 for the fact that python has only a single syntax for invoking a
 function.  Thus,
 
-  yo.c.funcname(arglist)
+    yo.c.funcname(arglist)
 
 invokes the yorick funcname as a subroutine, discarding any return value,
 while
 
-  yo.e.funcname(arglist)
+    yo.e.funcname(arglist)
 
 invokes the yorick funcname as a function, returning its value.  The
 arglist may include either positional or keyword arguments or both:
 
-  yo.c.plg(y, x, color='red')
-  4 * yo.e.atan(1)
+    yo.c.plg(y, x, color='red')
+    4 * yo.e.atan(1)
 
 The evaluate and call handle attributes do not communicate with yorick
 (unlike the value handle attributes, which do).  Instead, they return
@@ -96,9 +96,9 @@ Or, if you know a variable is large, you may want to set or get only a
 slice, without transferring the entire array.  You can do those things
 with an eval-sematics handle instead of a value-semantics handle:
 
-  yo.e.varname.info
-  yo.e.varname[indexlist] = <expr>
-  yo.e.varname[indexlist]
+    yo.e.varname.info
+    yo.e.varname[indexlist] = <expr>
+    yo.e.varname[indexlist]
 
 The info property is an integer array with info[0] a data type code,
 and for array types info[1] is the rank, and info[2:2+rank] are the
@@ -111,8 +111,8 @@ yo.c.varname[indexlist], but you are better off sticking with yorick
 semantics if you possibly can.  Finally, you can read the whole value
 from a reference using:
 
-  yo.e.varname.value
-  yo.e.varname.v
+    yo.e.varname.value
+    yo.e.varname.v
 
 In general, you can switch from any type of reference to any other by
 getting the c, e, or v (or call, evaluate, or value) attribute.  For
@@ -129,8 +129,8 @@ yo.v[''] returns yo.
 
 Two special objects can be used in data or arguments passed to yorick:
 
-  ystring0
-  ynewaxis
+    ystring0
+    ynewaxis
 
 The former looks like '' to python, but will be interpreted as
 string(0) (as opposed to "") in yorick.  The latter is the yorick
@@ -140,13 +140,13 @@ as : in the context of an index list.
 
 Lastly, pyorick can turn python into a terminal emulator for yorick:
 
-  yo()
+    yo()
 
 returns a yorick prompt, at which you can type arbitrary yorick commands.
 The py function in yorick returns you to the python prompt if invoked as
 a subroutine, or execs or evals python code if passed a string:
 
-  py;
-  py, "python code";
-  py, ["python code line 1", "python code line 2", ...];
-  py("python expression")
+    py;
+    py, "python code";
+    py, ["python code line 1", "python code line 2", ...];
+    py("python expression")
