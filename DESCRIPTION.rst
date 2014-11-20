@@ -9,22 +9,22 @@ plus a simpler interface.
 Simplified interface
 --------------------
 
-You can launch yorick as a subprocess with:
+You can launch yorick as a subprocess with::
 
     from pyorick import *
     yo = Yorick()
 
-To kill a running yorick, do this:
+To kill a running yorick, do this::
 
     yo.kill()
 
-You can execute yorick code, or evaluate a yorick expression like this:
+You can execute yorick code, or evaluate a yorick expression like this::
 
     yo('code')
     v = yo('=expr')
 
 However, the main way to interact with yorick is through one of three
-handles:
+handles::
 
     chandle = yo.call
     ehandle = yo.evaluate
@@ -35,7 +35,7 @@ yo.e for yo.evaluate, or yo.v for yo.value.
 
 Attributes of any of the three handle objects represent yorick
 variables.  Use the value handle to immediately set or get a whole
-variable values from yorick:
+variable values from yorick::
 
     yo.v.varname = <expr, any python expression>
     yo.v.varname
@@ -56,7 +56,7 @@ are unsupported, as are python class instances.
 
 The call and evaluate handles are primarily intended for referring to
 yorick functions.  Unlike python, yorick has two syntaxes for invoking
-functions:
+functions::
 
     funcname, arglist
     funcname(arglist)
@@ -67,17 +67,17 @@ value.  Yorick functions frequently have return values, even if they
 are usually intended to be invoked as subroutines.  Hence, a python
 interface to yorick needs separate call and evaluate handles to allow
 for the fact that python has only a single syntax for invoking a
-function.  Thus,
+function.  Thus::
 
     yo.c.funcname(arglist)
 
 invokes the yorick funcname as a subroutine, discarding any return value,
-while
+while::
 
     yo.e.funcname(arglist)
 
 invokes the yorick funcname as a function, returning its value.  The
-arglist may include either positional or keyword arguments or both:
+arglist may include either positional or keyword arguments or both::
 
     yo.c.plg(y, x, color='red')
     4 * yo.e.atan(1)
@@ -94,7 +94,7 @@ function variables.  In particular, you may want to query the data
 type and shape of a variable without actually transferring its data.
 Or, if you know a variable is large, you may want to set or get only a
 slice, without transferring the entire array.  You can do those things
-with an eval-sematics handle instead of a value-semantics handle:
+with an eval-sematics handle instead of a value-semantics handle::
 
     yo.e.varname.info
     yo.e.varname[indexlist] = <expr>
@@ -109,7 +109,7 @@ to convert indexlist from python index list semantics (first index
 slowest, 0-origin, slice stop non-inclusive) in
 yo.c.varname[indexlist], but you are better off sticking with yorick
 semantics if you possibly can.  Finally, you can read the whole value
-from a reference using:
+from a reference using::
 
     yo.e.varname.value
     yo.e.varname.v
@@ -127,7 +127,7 @@ variable.  As a special case, an empty string item of any handle
 returns the original top-level yorick process object.  For example,
 yo.v[''] returns yo.
 
-Two special objects can be used in data or arguments passed to yorick:
+Two special objects can be used in data or arguments passed to yorick::
 
     ystring0
     ynewaxis
@@ -138,13 +138,13 @@ pseudo-index -, which is np.newaxis in python.  Unfortunately,
 np.newaxis is None in python, which is [] in yorick, and interpreted
 as : in the context of an index list.
 
-Lastly, pyorick can turn python into a terminal emulator for yorick:
+Lastly, pyorick can turn python into a terminal emulator for yorick::
 
     yo()
 
 returns a yorick prompt, at which you can type arbitrary yorick commands.
 The py function in yorick returns you to the python prompt if invoked as
-a subroutine, or execs or evals python code if passed a string:
+a subroutine, or execs or evals python code if passed a string::
 
     py;
     py, "python code";
