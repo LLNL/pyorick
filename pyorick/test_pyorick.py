@@ -211,6 +211,7 @@ class TestProcess(unittest.TestCase):
         self.yo.kill()
 
     def test_basic(self):
+        """Check variety of simple yorick interface features."""
         self.yo("junk=42;")
         self.assertEqual(self.yo("=junk"), 42, 'process failed basic 1')
         self.assertEqual(self.yo.v.junk, 42, 'process failed basic 2')
@@ -220,7 +221,8 @@ class TestProcess(unittest.TestCase):
                          'process failed basic 5')
         self.assertEqual(self.yo.handles(7), (self.yo.c,self.yo.e,self.yo.v),
                          'process failed basic 6')
-        self.assertEqual(self.yo.c[''], self.yo, 'process failed basic 7')
+        self.assertEqual(self.yo.c[''].bare, self.yo.bare,
+                         'process failed basic 7')
         self.assertEqual(self.yo.v['Y_HOME'], self.yo.v.Y_HOME,
                          'process failed basic 7')
 

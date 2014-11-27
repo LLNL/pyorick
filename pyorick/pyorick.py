@@ -54,23 +54,22 @@ class Yorick(object):
       extra (str or list of str):  additional command line arguments
     """
     if isinstance(extra, Process):
-      self.proc = extra
+      self.bare = YorickBare(extra)
+    elif isinstance(extra, YorickBare):
+      self.bare = extra
     else:
-      self.proc = ProcessDefault(extra, **kwargs)
+      self.bare = YorickBare(ProcessDefault(extra, **kwargs))
     self._call = self._eval = self._value = None
 
-  def __del__(self):
-    self.kill()
-
   def __repr__(self):
-    return "<connection to {0}>".format(repr(self.proc)[1:-1])
+    return "<connection to {0}>".format(repr(self.bare)[1:-1])
 
   def kill(self):
     """Kill yorick process."""
-    self.proc.kill()
+    self.bare.proc.kill()
   def debug(self, on):
     """Set or unset debug mode for yorick process."""
-    self.proc.debug(on)
+    self.bare.proc.debug(on)
 
   def handles(self, which=3):
     """Return handles whose attributes are yorick variables.
@@ -92,26 +91,41 @@ class Yorick(object):
   @property
   def call(self):
     if not self._call:
-      self._call = YorickHandle(0, self)
+      self._call = YorickHandle(0, self.bare)
     return self._call
   @property
   def evaluate(self):
     if not self._eval:
-      self._eval = YorickHandle(1, self)
+      self._eval = YorickHandle(1, self.bare)
     return self._eval
   @property
   def value(self):
     if not self._value:
-      self._value = YorickHandle(2, self)
+      self._value = YorickHandle(2, self.bare)
     return self._value
   # single character abbreviations for interactive use
   c = call
   e = evaluate
   v = value
+  # FIXME: These create circular reference since they own use of self!
+  # fix using weakref module?  not obvious how
+  # - should both Yorick object and YorickHandle obejct refer to a common
+  # underlying object?  YorickVar also retains reference to Yorick
 
   def __call__(self, command=None, *args, **kwargs):  # pipe(command)
     """Execute a yorick command."""
     return self.call(command, *args, **kwargs)
+
+class YorickBare(object):
+  """Avoids circular references among Yorick, YorickHandle, and YorickVar."""
+  def __init__(self, proc):
+    self.proc = proc
+
+  def __del__(self):
+    self.proc.kill()
+
+  def __repr__(self):
+    return "<bare connection to {0}>".format(repr(self.proc)[1:-1])
 
   def _reqrep(self, msgid, *args, **kwargs):  # convenience for YorickHandle
     reply = Message()
@@ -154,49 +168,49 @@ class YorickHandle(object):
   # However, no other attributes are permitted.
 
   # must avoid __setattr__, __getattr__ by explicit calls through __dict__
-  def __init__(self, reftype, connection):
+  def __init__(self, reftype, bare):
     self.__dict__['_reftype__'] = reftype
-    self.__dict__['_yorick__'] = connection
+    self.__dict__['_yorick__'] = bare
 
   def __repr__(self):
-    connection = self.__dict__['_yorick__']
+    bare = self.__dict__['_yorick__']
     typ = ['call', 'evaluate', 'value'][self.__dict__['_reftype__']]
     s = "<yorick {0}-semantics handle to {1}>"
-    return s.format(typ, repr(connection.proc)[1:-1])
+    return s.format(typ, repr(bare.proc)[1:-1])
 
   def __getitem__(self, key=None):
     """Return parent connection, avoiding use of an attribute."""
-    connection = self.__dict__['_yorick__']
+    bare = self.__dict__['_yorick__']
     if not key:
-      return connection
+      return Yorick(bare)
     typ = self.__dict__['_reftype__']
     if typ == 2:
-      return connection._reqrep(ID_GETVAR, key)
-    return YorickVarDerived(connection, typ, key)
+      return bare._reqrep(ID_GETVAR, key)
+    return YorickVarDerived(bare, typ, key)
 
   def __call__(self, command=None, *args, **kwargs):
     """Implement handle(command) or handle(format, args, key=kwds)."""
     if args or kwargs:
       command = command.format(*args, **kwargs)
-    connection = self.__dict__['_yorick__']
+    bare = self.__dict__['_yorick__']
     typ = self.__dict__['_reftype__']
     if command and command[0]=='=':   # leading = forces eval semantics
       command = command[1:]
       typ = 1
     if command is None:
       print("--> yorick prompt (type py to return to python):")
-      connection.proc.interact(YorickServer())
+      bare.proc.interact(YorickServer())
       print("--> python prompt:")
     elif typ:
-      return connection._reqrep(ID_EVAL, command)
+      return bare._reqrep(ID_EVAL, command)
     else:
-      return connection._reqrep(ID_EXEC, command)
+      return bare._reqrep(ID_EXEC, command)
 
   def __setattr__(self, name, value):
     """Implement handle.name = value."""
-    connection = self.__dict__['_yorick__']
+    bare = self.__dict__['_yorick__']
     if name not in self.__dict__:
-      connection._reqrep(ID_SETVAR, name, value)
+      bare._reqrep(ID_SETVAR, name, value)
     else:
       object.__setattr__(self, name, value)
 
@@ -207,43 +221,43 @@ class YorickHandle(object):
       raise AttributeError("YorickHandle instance has no attribute '"+name+"'")
     if name in ['_reftype__', '_yorick__']:
       return self.__dict__[name]
-    connection = self.__dict__['_yorick__']
+    bare = self.__dict__['_yorick__']
     typ = self.__dict__['_reftype__']
     if typ == 2:
-      return connection._reqrep(ID_GETVAR, name)
-    return YorickVarDerived(connection, typ, name)
+      return bare._reqrep(ID_GETVAR, name)
+    return YorickVarDerived(bare, typ, name)
 
 class YorickVar(object):
   """Reference to a yorick variable."""
-  def __init__(self, yorick, reftype, name):
+  def __init__(self, bare, reftype, name):
     if not isinstance(name, basestring):
       raise PYorickError("illegal yorick variable name")
-    self.yorick = yorick
+    self.bare = bare
     self.reftype = bool(reftype)
     self.name = name
 
   def __repr__(self):
-    yorick = self.yorick
+    bare = self.bare
     typ = ['call', 'evaluate'][self.reftype]
     s = "<yorick variable {0} ({1}) in {2}>"
-    return s.format(self.name, typ, repr(yorick.proc)[1:-1])
+    return s.format(self.name, typ, repr(bare.proc)[1:-1])
 
   def __call__(self, *args, **kwargs):
     """Implement handle.name(args, kwargs)."""
     if self.reftype:
-      return self.yorick._reqrep(ID_FUNCALL, self.name, *args, **kwargs)
+      return self.bare._reqrep(ID_FUNCALL, self.name, *args, **kwargs)
     else:
-      self.yorick._reqrep(ID_SUBCALL, self.name, *args, **kwargs)
+      self.bare._reqrep(ID_SUBCALL, self.name, *args, **kwargs)
 
   def __getitem__(self, key): 
     """Implement handle.name[key]."""
     key = self._fix_indexing(key)
-    return self.yorick._reqrep(ID_GETSLICE, self.name, *key)
+    return self.bare._reqrep(ID_GETSLICE, self.name, *key)
 
   def __setitem__(self, key, value):
     """Implement handle.name[key] = value."""
     key = self._fix_indexing(key) + (value,)
-    return self.yorick._reqrep(ID_SETSLICE, self.name, *key)
+    return self.bare._reqrep(ID_SETSLICE, self.name, *key)
 
   def _fix_indexing(self, key):
     if not isinstance(key, tuple):
@@ -279,12 +293,12 @@ class YorickVar(object):
   @property
   def info(self):
     """Implement handle.name.info."""
-    return self.yorick._reqrep(ID_GETSHAPE, self.name)
+    return self.bare._reqrep(ID_GETSHAPE, self.name)
 
   @property
   def value(self):
     """Implement handle.name.value."""
-    return self.yorick._reqrep(ID_GETVAR, self.name)
+    return self.bare._reqrep(ID_GETVAR, self.name)
   # single character alias for interactive use
   v = value
 
@@ -292,7 +306,7 @@ class YorickVar(object):
   def call(self):
     """Implement handle.name.call."""
     if self.reftype:
-      return YorickVarDerived(self.yorick, False, self.name)
+      return YorickVarDerived(self.bare, False, self.name)
     else:
       return self
   # single character alias for interactive use
@@ -302,7 +316,7 @@ class YorickVar(object):
   def evaluate(self):
     """Implement handle.name.evaluate."""
     if not self.reftype:
-      return YorickVarDerived(self.yorick, True, self.name)
+      return YorickVarDerived(self.bare, True, self.name)
     else:
       return self
   # single character alias for interactive use
