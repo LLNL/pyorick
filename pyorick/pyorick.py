@@ -1198,10 +1198,9 @@ def find_package_data(name):
           d = d.decode('utf-8').splitlines() # removes universal newlines
           if not os.path.isdir(yuser):
             os.mkdir(yuser)
-          f = open(p, 'w')
-          for line in d:
-            f.write("%{0}\n".format(line))
-          f.close()
+          with open(p, 'w') as f:
+            for line in d:
+              f.write("{0}\n".format(line))
           path = p
   except:
     pass
