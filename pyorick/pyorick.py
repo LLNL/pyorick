@@ -1165,16 +1165,49 @@ def find_package_data(name):
   # to the newline character.
   # This convention makes it straightforward to install pyorick "by hand"
   # when distutils cannot be used.
+  # When pyorick.i0 is not found, check for it in the yorick user directory
+  # ~/.yorick/ (or similar).  If not found there, but pkgutil.get_data finds
+  # it, unpack pyorick.i0 to ~/.yorick/ (or an existing yorick customization
+  # directory).
+  path = None
   try:
-    path = __file__
-    if os.path.islink(path):
-      path = os.path.realpath(path)
-    path = os.path.join(os.path.dirname(os.path.abspath(path)), name)
+    p = __file__
+    if os.path.islink(p):
+      p = os.path.realpath(p)
+    p = os.path.join(os.path.dirname(os.path.abspath(p)), name)
+    if os.path.isfile(p):
+      path = p
+    else:
+      # before giving up, try ~/yorick directories
+      home = os.path.expandpath('~')
+      d = yuser = '.yorick'  # first choice is ~/.yorick
+      for d in [yuser, 'yorick', 'Library/Yorick', 'Application Data/Yorick',
+                'Yorick']:  # possibilities, in order, checked in yorick/std0.c
+        p = os.path.join(home, d)
+        if os.path.isdir(p):
+          yuser = p
+          break
+      p = os.path.join(yuser, name)
+      if not os.path.isfile(p):
+        path = p
+      else:
+        # last ditch effort, needed if pyorick loaded from a zip file
+        import pkgutil
+        d = pkgutil.get_data('pyorick', 'pyorick.i0')
+        if d:
+          d = d.decode('utf-8').splitlines() # removes universal newlines
+          if not os.path.isdir(yuser):
+            os.mkdir(yuser)
+          f = open(p, 'w')
+          for line in d:
+            f.write("%{0}\n".format(line))
+          f.close()
+          path = p
   except:
-    path = 'I am-not-a file, am.I'
-  if not os.path.exists(path):
+    pass
+  if path is None:
     raise PYorickError('unable to find '+name)
-  return path
+  return os.path.normcase(path)
 
 ypathd = "yorick"   # default yorick command
 ipathd = find_package_data("pyorick.i0")  # default pyorick.i0 include file
