@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 from __future__ import print_function
-from distutils.core import setup, Command
+from setuptools import setup, Command
 
 class TestCommand(Command):
   description = "PYorick test/check command"
@@ -34,7 +34,7 @@ class TestCommand(Command):
 # or py.test or python -m unittest -v test_pyorick to test pyorick.
 
 setup(name='pyorick',
-      version='1.0',
+      version='1.1',
       description='python connection to yorick',
       long_description='Execute yorick code, set and get yorick variables.',
       author='David Munro and John Field',
