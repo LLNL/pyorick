@@ -1297,9 +1297,9 @@ class PipeProcess(Process):
       self._debug = on
 
   def reqrep(self, request, reply, supress=False):
+    self.echo_pty()  # flush any pending output
     if self.pid is None:
       raise PYorickError("no yorick process running")
-    self.echo_pty()  # flush any pending output
     if not supress:
       self.send0("pyorick;")  # tell yorick to read pipe for request
     if self._debug:
@@ -1312,8 +1312,16 @@ class PipeProcess(Process):
       raise PYorickError("failed to send complete message, yorick killed")
     if self._debug:
       print("P>reqrep: blocking for reply...")
+    prompt = None
     try:  # receive reply
       for packet in reply.reader():
+        while True:  # do not block on rfd when pfd pending
+          p = select.select([self.pfd, self.rfd], [], [self.pfd, self.rfd])
+          if self.rfd in p[0]:
+            break
+          prompt = self.echo_pty()
+          if prompt == 'PYORICK-QUIT> ':
+            return
         self.recv(packet)
     except:
       self.kill()
@@ -1323,7 +1331,7 @@ class PipeProcess(Process):
     if reply.packets[0][0]==ID_EOL and reply.packets[0][1]==-1:
       self.kill(True)
       reply.packets[0][0] = ID_NIL
-    else:
+    elif not prompt:
       # not finished until yorick comes back to its prompt
       self.wait_for_prompt()
 
@@ -1354,10 +1362,9 @@ class PipeProcess(Process):
         elif self.pfd in p[0]:
           # only get here when no more requests on rfd
           prompt = self.echo_pty()
-          if prompt == 'PYORICK-QUIT> ':
-            self.kill(True)
-            return
           if prompt:  # pass along prompt and wait for user to respond
+            if prompt == 'PYORICK-QUIT> ':
+              return
             self.send0(raw_input(prompt))
       except KeyboardInterrupt:
         self.send0('\x03', True)  # send ctrl-c to pty
