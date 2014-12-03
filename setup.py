@@ -36,7 +36,7 @@ class TestCommand(Command):
 setup(name='pyorick',
       version='1.1',
       description='python connection to yorick',
-      long_description='Execute yorick code, set and get yorick variables.',
+      long_description=open('README.rst').read(),
       author='David Munro and John Field',
       author_email='dhmunro@users.sourceforge.net',
       url='https://github.com/dhmunro/pyorick',
