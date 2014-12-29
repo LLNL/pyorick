@@ -35,6 +35,9 @@ import select
 import subprocess
 import time
 
+# code executed by a yorick request runs in __main__ module by default
+import __main__
+
 ########################################################################
 
 class Yorick(object):
@@ -63,6 +66,9 @@ class Yorick(object):
 
   def __repr__(self):
     return "<connection to {0}>".format(repr(self.bare)[1:-1])
+
+  def __nonzero__(self):
+    return bool(self.bare)
 
   def kill(self):
     """Kill yorick process."""
@@ -107,14 +113,11 @@ class Yorick(object):
   c = call
   e = evaluate
   v = value
-  # FIXME: These create circular reference since they own use of self!
-  # fix using weakref module?  not obvious how
-  # - should both Yorick object and YorickHandle obejct refer to a common
-  # underlying object?  YorickVar also retains reference to Yorick
 
   def __call__(self, command=None, *args, **kwargs):  # pipe(command)
     """Execute a yorick command."""
     return self.call(command, *args, **kwargs)
+
 
 class YorickBare(object):
   """Avoids circular references among Yorick, YorickHandle, and YorickVar."""
@@ -127,6 +130,9 @@ class YorickBare(object):
   def __repr__(self):
     return "<bare connection to {0}>".format(repr(self.proc)[1:-1])
 
+  def __nonzero__(self):
+    return bool(self.proc)
+
   def _reqrep(self, msgid, *args, **kwargs):  # convenience for YorickHandle
     reply = Message()
     self.proc.reqrep(Message(msgid, *args, **kwargs), reply)
@@ -136,6 +142,11 @@ class YorickBare(object):
         raise PYorickError("yorick sent error reply to request")
       reply = YorickVarDerived(self, 0, args[0])
     return reply
+
+  def _server(self, namespace=None):
+    print("--> yorick prompt (type py to return to python):")
+    self.proc.interact(YorickServer(namespace))
+    print("--> python prompt:")
 
 # expose this to allow user to catch pyorick exceptions
 class PYorickError(Exception):
@@ -155,6 +166,8 @@ class YString0(str):
 ystring0 = YString0()
 
 ########################################################################
+
+server_namespace = __main__.__dict__  # for YorickServer
 
 class YorickHandle(object):
   """Object whose attributes are yorick variables.
@@ -178,6 +191,9 @@ class YorickHandle(object):
     s = "<yorick {0}-semantics handle to {1}>"
     return s.format(typ, repr(bare.proc)[1:-1])
 
+  def __nonzero__(self):
+    return bool(self.__dict__['_yorick__'])
+
   def __getitem__(self, key=None):
     """Return parent connection, avoiding use of an attribute."""
     bare = self.__dict__['_yorick__']
@@ -198,9 +214,7 @@ class YorickHandle(object):
       command = command[1:]
       typ = 1
     if command is None:
-      print("--> yorick prompt (type py to return to python):")
-      bare.proc.interact(YorickServer())
-      print("--> python prompt:")
+      bare._server(server_namespace)
     elif typ:
       return bare._reqrep(ID_EVAL, command)
     else:
@@ -241,6 +255,9 @@ class YorickVar(object):
     typ = ['call', 'evaluate'][self.reftype]
     s = "<yorick variable {0} ({1}) in {2}>"
     return s.format(self.name, typ, repr(bare.proc)[1:-1])
+
+  def __nonzero__(self):
+    return bool(self.bare)
 
   def __call__(self, *args, **kwargs):
     """Implement handle.name(args, kwargs)."""
@@ -330,6 +347,12 @@ YorickVarDerived = YorickVar
 
 class YorickServer(object):
   """Server to accept requests from and generate replies to yorick."""
+  def __init__(self, namespace, debug=False):
+    if not isinstance(namespace, Mapping):
+      namespace = namespace.__dict__  # can pass module as well as its dict
+    self.namespace = namespace
+    self.debug = debug
+
   def start(self, command=None):
     """Start server, optionally returning exec msg to be sent to yorick."""
     self.started = False
@@ -340,31 +363,62 @@ class YorickServer(object):
       # must cause yorick to begin emitting requests rather than replies.
       return Message(ID_EXEC, command)
 
-  def reply(self):
+  def reply(self, debug=False):
     """Return message to be sent in reply to self.request."""
+    if debug:
+      print("P>reply: decoding")
     req = self.request.decode()
     self.request = Message()  # empty container for next request
     code = None
     if isinstance(req, tuple):
+      if debug:
+        print("P>reply: req[0]="+str(req[0]))
       if req[0]==ID_EOL and not req[1][0]:
         # this is signal to exit terminal mode (matches start command)
         return None
-      if req[0] == ID_EXEC:
+      if req[0] in [ID_EXEC, ID_EVAL, ID_GETVAR, ID_SETVAR,
+                    ID_FUNCALL, ID_SUBCALL, ID_GETSLICE, ID_SETSLICE]:
         text = req[1][0].replace('\0', '\n')
-        if not text:
-          # alternate signal to exit terminal mode (if no start command)
-          return None
-        code = compile(text, '<pyorick command>', 'exec')
-      elif req[0] == ID_EVAL:
-        text = req[1][0].replace('\0', '\n')
-        if text:
-          code = compile(text, '<pyorick command>', 'eval')
+        if req[0] == ID_SETVAR:
+          self.namespace['_pyorick_setvar_rhs_'] = req[1][-1]
+          text += '=_pyorick_setvar_rhs_'
+          # note: if locals dict specified, must prepend "global varname;"
+        try:
+          if req[0] in [ID_EXEC, ID_SETVAR]:
+            if not text:
+              # alternate signal to exit terminal mode (if no start command)
+              return None
+            code = compile(text, '<pyorick command>', 'exec')
+          else:
+            code = compile(text, '<pyorick command>', 'eval')
+          if debug:
+            print("P>reply: compiled text="+text)
+        except SyntaxError:
+          if debug:
+            print("P>reply: syntax error, text="+text)
+          code = None
     if code:
       self.started = True
       try:
-        msg = Message(None, eval(code, globals()))
-        return msg
+        # first, eval the text sent as command or variable name
+        obj = eval(code, self.namespace)
+        rslt = None
+        if req[0] in [ID_EXEC, ID_EVAL, ID_GETVAR, ID_SETVAR]:
+          rslt = obj
+          if req[0] == ID_SETVAR:
+            del self.namespace['_pyorick_setvar_rhs_']
+        elif req[0] in [ID_FUNCALL, ID_SUBCALL]:
+          rslt = obj(*req[1][1:], **req[2])
+          if req[0] == ID_SUBCALL:
+            rslt = None  # discard any return value
+        elif req[0] == ID_GETSLICE:
+          rslt = obj[req[1][1:]]
+        elif req[0] == ID_SETSLICE:
+          obj[req[1][1:]] = req[1][-1]
+        return Message(None, rslt)
       except:
+        if debug:
+          raise
         # any exceptions trying to eval or encode reply are yorick's problem
         pass
     elif not self.started:
@@ -773,6 +827,7 @@ class codec(object):  # not really a class, just a convenient container
   def evaluate(msg):
     packet = np.zeros(msg.packets[-1][1], dtype=np.uint8)
     if packet.nbytes:
+      msg.packets.append(packet)
       yield packet
   @evaluate.encoder()
   def evaluate(msg, msgid, text):
@@ -1179,7 +1234,7 @@ def find_package_data(name):
       path = p
     else:
       # before giving up, try ~/yorick directories
-      home = os.path.expandpath('~')
+      home = os.path.expanduser('~')
       d = yuser = '.yorick'  # first choice is ~/.yorick
       for d in [yuser, 'yorick', 'Library/Yorick', 'Application Data/Yorick',
                 'Yorick']:  # possibilities, in order, checked in yorick/std0.c
@@ -1260,6 +1315,9 @@ class PipeProcess(Process):
 
   def __del__(self):
     self.kill()
+
+  def __nonzero__(self):
+    return self.pid is not None
 
   def kill(self, dead=False):
     if self.proc is not None and not self.killing:
@@ -1353,7 +1411,7 @@ class PipeProcess(Process):
         if self.rfd in p[0]:
           for packet in server.request.reader():
             self.recv(packet)
-          rep = server.reply()
+          rep = server.reply(self._debug)
           if rep:
             for packet in rep.packets:
               self.send(packet)  # yorick is blocked waiting for this

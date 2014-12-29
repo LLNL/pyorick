@@ -55,7 +55,7 @@ func pyorick(mode)
       include, grow("___=[];" , ___), 1;
       swap, pydebug, _pydebug;
       if (pydebug) { write, "Y>pyorick response is:"; info, ___; }
-      _pyorick_put, _pyorick_encode(___);
+      _pyorick_put, _pyorick_encode(___, 1);
       _pyorick_sending = 0;
       swap, pydebug, _pydebug;
     }
@@ -86,7 +86,8 @@ local pydebug;
  * py("function", arg1, arg2, ...)     execute function with arguments
  *                          argN may be keyword argument
  * py("variable:")          reference to variable for use as argument
- * py, "variable:", value)             set variable to value
+ * py, "variable:", value              set variable to value
+ *   note: python function or variable names may contain . characters
  * py("array:", index1, index2, ...)   get array slice
  * py, "array:", index1, index2, ..., value      set array slice
  *   note: index order and meaning as interpreted by python
@@ -104,16 +105,53 @@ func py(command, ..)
     after_error = _pyorick_err_handler;
     if (pydebug) write, "Y>py exiting yorick terminal mode";
     dbexit, 0;  /* return, making sure we are out of dbug> mode */
-  } else if (!more_args()) {
-    id = am_subroutine()? _ID_EXEC : _ID_EVAL;
+
+  } else {
+    nargs = more_args();
     command = strchar(command)(1:-1);
+    isvar = (command(0) == ':');
+    if (isvar) command = command(1:-1);
     list = where(!command);
     if (numberof(list)) command(list) = '\n';
-    _pyorick_send, [id, numberof(command)];
-    _pyorick_send, command;
-    return _pyorick_decode(_pyorick_get());
-  } else {
-    error, "not yet implemented, use py,command or py(expression)";
+    idx = hasval = 0;
+    if (!isvar) {
+      if (nargs) {
+        id = am_subroutine()? _ID_SUBCALL : _ID_FUNCALL;
+      } else {
+        id = am_subroutine()? _ID_EXEC : _ID_EVAL;
+        idx = 1;
+      }
+    } else {
+      if (am_subroutine()) {
+        if (!nargs)
+          error, "set python variable requires a value";
+        id = (nargs>1)? _ID_SETSLICE : _ID_SETVAR;
+        nargs -= 1;  /* final argument is value, not list */
+        hasval = 1;
+      } else {
+        id = nargs? _ID_GETSLICE : _ID_GETVAR;
+      }
+    }
+    if (pydebug)
+      write, format="Y>py id=%ld, nargs=%ld, hasval=%ld\n", id, nargs, hasval;
+    hdr = [id, numberof(command)];
+    if (idx) msg = save(_pyorick_id=id, hdr, value=command);
+    else msg = save(_pyorick_id=id, hdr, name=command);
+    if (id == _ID_GETVAR) return msg;  /* reference to python variable */
+    if (nargs > 0) {
+      args = save();
+      while (nargs--) save, args, string(0), _pyorick_encode(next_arg(), 2);
+      save, msg, args;
+    }
+    if (hasval) save, msg, value=_pyorick_encode(next_arg(), 2);
+
+    _pyorick_put, msg;
+    v = _pyorick_decode(_pyorick_get());
+    if (!is_obj(v) || is_void(v._pyorick_id))
+      return v;
+    if (allof(v(hdr) == [_ID_EOL,1]))
+      error, "python reported error";
+    error, "python reply undecodable";
   }
 }
 
@@ -141,6 +179,13 @@ _ID_SUBCALL = 37;
 _ID_GETSLICE = 38;
 _ID_SETSLICE = 39;
 _ID_GETSHAPE = 40;
+
+/* _ID_EOL flag values:
+ * 0   end of list
+ * 1   error sent by _pyorick_puterr
+ * 2   after GETVAR request to indicate unencodable
+ * -1  yorick has quit
+ */
 
 /* garbled messages are fatal, shut down the pipes and exit idler loop */
 func _pyorick_panic(msg)
@@ -513,7 +558,7 @@ func _pyorick_setslice(a, value, ..)
     error, "cannot accept more than 10 dimensions";
 }
 
-func _pyorick_encode(value)
+func _pyorick_encode(value, env)
 {
   if (!is_obj(value) || is_void(value._pyorick_id)) {
     /* ordinary passive value */
@@ -530,15 +575,19 @@ func _pyorick_encode(value)
         }
       } else {
         id = where(_pyorick_type(*,) == typeof(value));
-        if (!numberof(id))
-          error, "unsupported datatype " + typeof(value);
-        id = id(1) - 1;
-        if (!id) id = 8;
-        dims = dimsof(value);
+        if (numberof(id)) {
+          id = id(1) - 1;
+          if (!id) id = 8;
+          dims = dimsof(value);
+        }
       }
-      msg = save(_pyorick_id=id, hdr=[id,dims(1)]);
-      if (id != 16) save, msg, value;
-      else save, msg, lens, value=(is_void(value)?[]:strchar(value));
+      if (numberof(id)) {
+        msg = save(_pyorick_id=id, hdr=[id,dims(1)]);
+        if (id != 16) save, msg, value;
+        else save, msg, lens, value=(is_void(value)?[]:strchar(value));
+      } else {
+        msg = "unencodable array datatype " + typeof(value);
+      }
 
     } else if (is_range(value)) {
       id = _ID_SLICE;
@@ -551,33 +600,39 @@ func _pyorick_encode(value)
     } else if (is_obj(value)) {
       names = value(*,);
       named = allof(names);
-      if (!named && anyof(names))
-        error, "oxy object members must be all named or all anonymous";
-      id = (named? _ID_DCT : _ID_LST);
-      v = save();
-      msg = save(_pyorick_id=id, hdr=[id, 0], value=v);
-      n = numberof(names);
-      if (named) {
+      if (named || noneof(names)) {
+        id = (named? _ID_DCT : _ID_LST);
+        v = save();
+        msg = save(_pyorick_id=id, hdr=[id, 0], value=v);
+        n = numberof(names);
         for (i=1 ; i<=n ; ++i) {
-          name = strchar(names(i));
-          m = save(_pyorick_id=_ID_SETVAR, hdr=[_ID_SETVAR,numberof(name)],
-                   name, value=_pyorick_encode(value(noop(i))));
+          m = _pyorick_encode(value(noop(i)), 0);
+          if (!is_obj(m))
+            return m;
+          if (named) {
+            name = strchar(names(i));
+            m = save(_pyorick_id=_ID_SETVAR, hdr=[_ID_SETVAR,numberof(name)],
+                     name, value=m);
+          }
           save, v, string(0), m;
         }
       } else {
-        for (i=1 ; i<=n ; ++i)
-          save, v, string(0), _pyorick_encode(value(noop(i)));
+        msg = "oxy object members neither all named nor all anonymous";
       }
 
     } else {  /* unencodable value, indicate variable reference */
-      msg = save(_pyorick_id=_ID_EOL, hdr=[_ID_EOL,2], value=[]);
+      if (env==1) msg = save(_pyorick_id=_ID_EOL, hdr=[_ID_EOL,2], value=[]);
+      else msg = "unencodable value";
     }
 
   } else {
     /* special or active value */
-    error, "active messages to python currently unsupported";
+    msg = "unexpected active message to python";
   }
 
+  if (env && !is_obj(msg)) {
+    error, msg;
+  }
   return msg;
 }
 
