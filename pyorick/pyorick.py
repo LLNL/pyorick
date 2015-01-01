@@ -165,6 +165,9 @@ class YString0(str):
   pass
 ystring0 = YString0()
 
+def yencodable(value):
+  return codec.encode_data(value, True)
+
 ########################################################################
 
 server_namespace = __main__.__dict__  # for YorickServer
@@ -1113,25 +1116,35 @@ class codec(object):  # not really a class, just a convenient container
 
   # decode work done, but encode still needs to recogize python data
   @staticmethod
-  def encode_data(value):   # return (msgid, args, kwargs)
+  def encode_data(value, dryrun=False):   # return (msgid, args, kwargs)
     msgid = -1  # unknown initially
 
     if isinstance(value, Number):
+      if dryrun: return True
       value = np.array(value)
 
     elif isinstance(value, bytearray):
+      if dryrun: return True
       value = np.frombuffer(value, dtype=np.uint8)
 
     elif isinstance(value, basestring):
+      if dryrun: return True
       return codec.encode_sarray((), value)
 
     elif isinstance(value, Sequence):   # check for array-like nested sequence
       shape, typ = codec.nested_test(value)
       if typ == basestring:
+        if dryrun: return True
         return codec.encode_sarray(shape, value)
       elif typ != Number:
+        if dryrun:
+          for v in value:
+            if not codec.encode_data(v, True):
+              return False
+          return True
         # may raise errors later, but not array-like
         return (ID_LST, (value,), {})
+      if dryrun: return True
       # np.array converts nested list of numbers to ndarray
       value = np.array(value)
 
@@ -1140,14 +1153,18 @@ class codec(object):  # not really a class, just a convenient container
       shape = value.shape
       k = str(value.dtype.kind)
       if k in 'SUa':
+        if dryrun: return True
         return codec.encode_sarray(shape, value.tolist())
       if k not in 'biufc':
+        if dryrun: return False
         raise PYorickError("cannot encode unsupported array item type")
       if k == 'b':
         k = 'u'
       k += str(value.dtype.itemsize)
       if k not in id_typtab:
+        if dryrun: return False
         raise PYorickError("cannot encode unsupported array numeric dtype")
+      if dryrun: return True
       msgid = id_typtab[k]
       if not value.flags['CARRAY']:
         value = np.copy(value, 'C')
@@ -1155,25 +1172,37 @@ class codec(object):  # not really a class, just a convenient container
 
     # index range, including (newaxis, Ellipsis) <--> (-, ..)
     elif isinstance(value, NewAxis):  # np.newaxis is unfortunately None
+      if dryrun: return True
       return (ID_SLICE, (None, 7), {})
     elif value is Ellipsis:
+      if dryrun: return True
       return (ID_SLICE, (None, 11), {})
     elif isinstance(value, slice):
+      if dryrun: return True
       return (ID_SLICE, (value,), {})
 
     elif value is None:
+      if dryrun: return True
       return (ID_NIL, (), {})
 
     # dict objects only allowed if all keys are strings
     elif isinstance(value, Mapping):
       if not all(isinstance(key, basestring) for key in value):
+        if dryrun: return False
         raise PYorickError("cannot encode dict with non-string key")
+      if dryrun:
+        for key in value:
+          if not codec.encode_data(value[key], True):
+            return False
+        return True
       return (ID_DCT, (value,), {})
 
     elif isinstance(value, YorickVar):
+      if dryrun: return True
       return (ID_GETVAR, (value.name,), {})
 
     else:
+      if dryrun: return False
       raise PYorickError("cannot encode unsupported data object")
 
   @staticmethod
@@ -1198,7 +1227,6 @@ class codec(object):  # not really a class, just a convenient container
             return shape, None
         return shape + n, typ
     return shape, None
-    
 
 def nplongs(*args):
   return np.array(args, dtype=c_long)

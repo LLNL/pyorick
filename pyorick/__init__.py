@@ -125,4 +125,4 @@ Finally, pyorick can turn the python command line into a yorick terminal:
 from .pyorick import *
 
 # limit names exported by "from pyorick import *"
-__all__ = ['Yorick', 'PYorickError', 'ynewaxis', 'ystring0']
+__all__ = ['Yorick', 'PYorickError', 'ynewaxis', 'ystring0', 'yencodable']
