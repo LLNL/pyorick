@@ -304,10 +304,9 @@ func test(a, b=) {
         self.assertEqual(self.yo.v.testv.tolist(), [3.0, 2.0],
                          'process failed on setslice, python semantics')
         i = self.yo.evaluate.testv.info
-        self.assertEqual(i.tolist(), [6, 1, 2],
-                         'process failed on getshape')
+        self.assertEqual(i, (6, 1, 2), 'process failed on getshape')
         i = self.yo.evaluate.test.info
-        self.assertEqual(i, [-1], 'process failed on getshape')
+        self.assertEqual(i, (-1,), 'process failed on getshape')
 
 if __name__ == '__main__':
     unittest.main()

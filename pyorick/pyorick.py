@@ -137,11 +137,14 @@ class YorickBare(object):
     reply = Message()
     self.proc.reqrep(Message(msgid, *args, **kwargs), reply)
     reply = reply.decode()
-    if isinstance(reply, tuple):
-      if msgid!=ID_GETVAR or reply!=(ID_EOL, (2,), {}):
-        raise PYorickError("yorick sent error reply to request")
-      reply = YorickVarDerived(self, 0, args[0])
-    return reply
+    if not isinstance(reply, tuple):
+      return reply
+    if reply == (ID_EOL, (2,), {}):
+      if msgid == ID_GETVAR:
+        return YorickVarDerived(self, 0, args[0])
+      elif msgid in [ID_EVAL, ID_FUNCALL, ID_GETSLICE]:
+        return YorickHold(self, self._reqrep(ID_GETVAR, ''))
+    raise PYorickError("yorick sent error reply to request")
 
   def _server(self, namespace=None):
     print("--> yorick prompt (type py to return to python):")
@@ -213,13 +216,20 @@ class YorickHandle(object):
       command = command.format(*args, **kwargs)
     bare = self.__dict__['_yorick__']
     typ = self.__dict__['_reftype__']
-    if command and command[0]=='=':   # leading = forces eval semantics
-      command = command[1:]
-      typ = 1
+    if command:
+      if command[0] == '=':    # leading = forces eval semantics
+        command = command[1:]
+        typ = 1
+      elif command[0] == '@':  # hold return value
+        command = '\05' + command[1:]
+        typ = 1
     if command is None:
       bare._server(server_namespace)
     elif typ:
-      return bare._reqrep(ID_EVAL, command)
+      rslt = bare._reqrep(ID_EVAL, command)
+      if command[0] == '\05':
+        return YorickHold(bare, rslt)
+      return rslt
     else:
       return bare._reqrep(ID_EXEC, command)
 
@@ -252,6 +262,7 @@ class YorickVar(object):
     self.bare = bare
     self.reftype = bool(reftype)
     self.name = name
+    self._info = None
 
   def __repr__(self):
     bare = self.bare
@@ -279,10 +290,10 @@ class YorickVar(object):
     key = self._fix_indexing(key) + (value,)
     return self.bare._reqrep(ID_SETSLICE, self.name, *key)
 
-  def _fix_indexing(self, key):
+  def _fix_indexing(self, key, force=False):
     if not isinstance(key, tuple):
       key = (key,)  # only single index provided
-    if self.reftype:
+    if self.reftype and not force:
       return key
     # convert from python index semantics to yorick index semantics
     ndxs = []
@@ -313,12 +324,59 @@ class YorickVar(object):
   @property
   def info(self):
     """Implement handle.name.info."""
-    return self.bare._reqrep(ID_GETSHAPE, self.name)
+    name = self.name
+    if name[0] == '\05':
+      name = name[1:]
+    if self._info is None:
+      self._info = tuple(self.bare._reqrep(ID_GETSHAPE, name))
+    return self._info
+
+  @property
+  def is_string(self): return self.info[0] == ID_STRING
+  @property
+  def is_number(self): return self.info[0] in range(0,15)
+  @property
+  def is_bytes(self): return self.info[0] == 8
+  @property
+  def is_integer(self): return self.info[0] in [0,1,2,3,4,8,9,10,11,12]
+  @property
+  def is_real(self): return self.info[0] in [5, 6, 7]
+  @property
+  def is_complex(self): return self.info[0] in [13, 14, 15]
+  @property
+  def is_func(self): return self.info[0] == -1
+  @property
+  def is_list(self): return self.info[0] == -2
+  @property
+  def is_dict(self): return self.info[0] == -3
+  @property
+  def is_range(self): return self.info[0] == -4
+  @property
+  def is_nil(self): return self.info[0] == -5
+  @property
+  def is_obj(self): return self.info[0] == -8  # oxy obj not list or dict
+  @property
+  def shape(self):
+    if self.info >= 0:
+      return self._info[-1:0:-1]
+    else:
+      return None
+  @property
+  def is_file(self):
+    if self.info[0] == -6:
+      return 1
+    elif self._info[0] == -7:
+      return 2
+    else:
+      return 0
 
   @property
   def value(self):
     """Implement handle.name.value."""
-    return self.bare._reqrep(ID_GETVAR, self.name)
+    name = self.name
+    if name[0] == '\05':
+      name = name[1:]
+    return self.bare._reqrep(ID_GETVAR, name)
   # single character alias for interactive use
   v = value
 
@@ -326,9 +384,14 @@ class YorickVar(object):
   def call(self):
     """Implement handle.name.call."""
     if self.reftype:
-      return YorickVarDerived(self.bare, False, self.name)
-    else:
-      return self
+      name = self.name
+      if name[0] == '\05':
+        name = name[1:]
+      if name[0]>='9' or name[0]<='0':
+        return YorickVarDerived(self.bare, False, name)
+      else:
+        return YorickVarCall(self, name, False)
+    return self
   # single character alias for interactive use
   c = call
 
@@ -336,17 +399,84 @@ class YorickVar(object):
   def evaluate(self):
     """Implement handle.name.evaluate."""
     if not self.reftype:
-      return YorickVarDerived(self.bare, True, self.name)
-    else:
-      return self
+      if self.name[0]>='9' or self.name[0]<='0':
+        return YorickVarDerived(self.bare, True, self.name)
+      else:
+        return YorickVarCall(self, self.name, True)
+    return self
   # single character alias for interactive use
   e = evaluate
+
+  @property
+  def hold(self):
+    """Implement handle.name.hold."""
+    if self.name[0] != '\05':
+      if self.name[0]>='9' or self.name[0]<='0':
+        return YorickVarDerived(self.bare, True, '\05'+self.name)
+      else:
+        return YorickVarCall(self, '\05'+self.name, True)
+    return self
 
 # Hook for packages (like a lazy evaluator) to customize YorickVar;
 # YorickVarDerived is the object a YorickHandle uses.
 # The YorickVarDerived class must be a derived class of YorickVar.
 # The derived class must call YorickVar.__init__ in its constructor.
 YorickVarDerived = YorickVar
+
+class YorickHold(YorickVar):
+  """Reference to a yorick anonymous result, holding use of result."""
+  def __init__(self, bare, n):
+    if isinstance(n, np.ndarray):
+      n = int(n)
+    if (not isinstance(n, Number)) or n<=3:
+      raise PYorickError("illegal yorick reference number")
+    self.bare = bare
+    self.reftype = True
+    self.name = str(n)
+    self._info = None
+
+  def __del__(self):  # free use of value in yorick
+    if (self.bare):
+      self.bare._reqrep(ID_EXEC, "_pyorick_refs,1,"+self.name)
+
+class YorickVarCall(object):
+  """Reference to anonymous yorick variable callable only."""
+  def __init__(self, var, name, reftype):
+    self.var = var    # holds use of YorickHold object var
+    self.name = name
+    self.reftype = reftype
+
+  def __call__(self, *args, **kwargs):
+    """Implement handle.name(args, kwargs)."""
+    if self.reftype:
+      return self.var.bare._reqrep(ID_FUNCALL, self.name, *args, **kwargs)
+    else:
+      self.var.bare._reqrep(ID_SUBCALL, self.name, *args, **kwargs)
+
+  def __getitem__(self, key): 
+    """Implement handle.name[key]."""
+    if not self.reftype:
+      key = self.var._fix_indexing(key, True)
+    return self.var.bare._reqrep(ID_GETSLICE, self.name, *key)
+
+  @property
+  def call(self):
+    """Implement handle.name.call."""
+    if self.reftype:
+      name = self.name
+      if name[0] == '\05':
+        name = name[1:]
+      return YorickVarCall(self.var, name, False)
+    return self
+  # single character alias for interactive use
+  c = call
+
+  @property
+  def hold(self):
+    """Implement handle.name.hold."""
+    if self.name[0] != '\05':
+      return YorickVarCall(self.var, '\05'+self.name, True)
+    return self
 
 class YorickServer(object):
   """Server to accept requests from and generate replies to yorick."""
