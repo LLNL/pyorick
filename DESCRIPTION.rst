@@ -237,15 +237,15 @@ variable values, or to get or set array slices::
 Finally, some minor features or pyorick are worth mentioning:
 
 1. The boolean value of most pyorick objects, such as ``yo``, ``yo.e``, or
-  ``yo.e.name``, is True if and only if the underlying yorick process is
-  alive.
+   ``yo.e.name``, is True if and only if the underlying yorick process is
+   alive.
 
 2. The function ``yencodable(value)`` returns True if and only if the
-  python value can be sent to yorick.
+   python value can be sent to yorick.
 
 3. For any of the top-level object or handle object function calls, you
-  may supply additional arguments, which will be interpreted as format
-  arguments::
+   may supply additional arguments, which will be interpreted as format
+   arguments::
 
     yo(string, a, b, c)   # same as yo(string.format(a,b,c)):
     yo.c("""func {0} {{
@@ -258,8 +258,8 @@ Finally, some minor features or pyorick are worth mentioning:
     ystring0
     ynewaxis
 
-  The former looks like '' to python, but will be interpreted as
-  string(0) (as opposed to "") in yorick.  The latter is the yorick
-  pseudo-index -, which is np.newaxis in python.  Unfortunately,
-  np.newaxis is None in python, which is [] in yorick, and interpreted
-  as : in the context of an index list.
+   The former looks like '' to python, but will be interpreted as
+   string(0) (as opposed to "") in yorick.  The latter is the yorick
+   pseudo-index -, which is np.newaxis in python.  Unfortunately,
+   np.newaxis is None in python, which is [] in yorick, and interpreted
+   as : in the context of an index list.
