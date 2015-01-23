@@ -59,6 +59,7 @@ class TestCodec(unittest.TestCase):
         """Check that scalar types can be encoded and decoded."""
         for i in range(len(self.scalars)):
             s = self.scalars[i]
+            self.assertTrue(yencodable(s), 'yencodable fails item '+str(i))
             msg = Message(None, s)
             v = msg.decode()
             self.assertEqual(s, v, 'codec failed on item '+str(i))
@@ -67,6 +68,7 @@ class TestCodec(unittest.TestCase):
         """Check that array types can be encoded and decoded."""
         for i in range(len(self.arrays)):
             s = self.arrays[i]
+            self.assertTrue(yencodable(s), 'yencodable fails item '+str(i))
             msg = Message(None, s)
             v = msg.decode()
             self.assertTrue(np.array_equal(np.array(s), v),
@@ -76,6 +78,7 @@ class TestCodec(unittest.TestCase):
         """Check that string types can be encoded and decoded."""
         for i in range(len(self.strings)):
             s = self.strings[i]
+            self.assertTrue(yencodable(s), 'yencodable fails item '+str(i))
             msg = Message(None, s)
             v = msg.decode()
             if isinstance(s, np.ndarray):
@@ -86,6 +89,7 @@ class TestCodec(unittest.TestCase):
         """Check that group types can be encoded and decoded."""
         for i in range(len(self.groups)):
             s = self.groups[i]
+            self.assertTrue(yencodable(s), 'yencodable fails item '+str(i))
             msg = Message(None, s)
             v = msg.decode()
             if isinstance(s, tuple):
@@ -95,8 +99,10 @@ class TestCodec(unittest.TestCase):
     def test_bad(self):
         """Check that unencodable types cannot be encoded."""
         for i in range(len(self.bad)):
+            s = self.bad[i]
+            self.assertFalse(yencodable(s), 'yencodable fails item '+str(i))
             with self.assertRaises(PYorickError) as cm:
-                msg = Message(None, self.bad[i])
+                msg = Message(None, s)
             self.assertIsInstance(cm.exception, PYorickError,
                                   'codec failed on item '+str(i))
 
