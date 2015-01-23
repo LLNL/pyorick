@@ -89,11 +89,12 @@ func py(command, ..)
  *            with arglist, invoke "code" or "expr" as python function
  *       or py("vexpr:")          reference python variable "vexpr" in arglist
  *       or py("vexpr:", indexlist)         return python "vexpr" slice
- *       or py, "vexpr:", value             set python "vexpr" to value
+ *       or py, "vexpr=", value             set python "vexpr" to value
  *       or py, "vexpr:", indexlist, value  set python "vexpr" slice to value
  *            indexlist order and meaning as in python
  *
- *   Yorick API for sending active messages to python.
+ *   Yorick API for sending active messages to python.  The postfix ":" and
+ *   postfix "=" are interchangable in the last four forms.
  *
  * SEE ALSO: pyorick
  */
@@ -113,7 +114,7 @@ func py(command, ..)
   } else {
     nargs = more_args();
     command = strchar(command)(1:-1);
-    isvar = (command(0) == ':');
+    isvar = anyof(command(0) == [':','=']);
     if (isvar) command = command(1:-1);
     list = where(!command);
     if (numberof(list)) command(list) = '\n';

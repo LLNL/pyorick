@@ -3,11 +3,10 @@ Run Yorick from Python
 
 The pyorick package starts `yorick <http://yorick.github.com>`_ as a
 subprocess and provides an interface between python and yorick
-interpreted code.  Pyorick provides a full interface to yorick,
-plus a simpler interface.
+interpreted code.
 
-Simplified interface
---------------------
+Interface to yorick from python
+-------------------------------
 
 You can launch yorick as a subprocess with::
 
@@ -200,6 +199,9 @@ get call semantics or hold-reference sematics like this::
     ref1.call(args)  # call ref1 as subroutine, discard result
     ref1.hold(args)  # call ref1 as function, return reference to result
 
+Interface to python from yorick
+-------------------------------
+
 Pyorick can also turn python into a terminal emulator for yorick::
 
     yo()
@@ -227,12 +229,15 @@ discarding any return value if invoked as a subroutine::
     py, "callable_expr", arg1, arg2;
     py("callable_expr", arg1, arg2)
 
-A postfix ":" at the end of the expression permits you to set python
-variable values, or to get or set array slices::
+A postfix ``":"`` or ``"="`` at the end of the expression permits you
+to set python variable values, or to get or set array slices::
 
-    py, "settable_expr:", value;       # settable_expr = value
+    py, "settable_expr=", value;       # settable_expr = value
     py("array_expr:", i1, i2)          # array_expr[i1, i2]
     py, "array_expr:", i1, i2, value;  # array_expr[i1, i2] = value
+
+Additional features
+-------------------
 
 Finally, some minor features or pyorick are worth mentioning:
 
@@ -263,3 +268,9 @@ Finally, some minor features or pyorick are worth mentioning:
    pseudo-index -, which is np.newaxis in python.  Unfortunately,
    np.newaxis is None in python, which is [] in yorick, and interpreted
    as : in the context of an index list.
+
+5. All pyorick generated errors use the ``PYorickError`` class.  There
+   is currently no way to catch yorick errors in python, although the
+   yorick error message will be printed.  In terminal emulator mode,
+   pyorick catches all python errors, ignoring them in python, but
+   returning error indications to yorick as appropriate.
