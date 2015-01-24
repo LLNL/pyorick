@@ -17,6 +17,12 @@
  * You may also set _pyorick_rfd and _pyorick_wfd by hand before invoking
  * this script for debugging purposes.
  */
+local pyorick_dir;
+/* DOCUMENT pyorick_dir
+ *   Directory containing pyorick.i0, the pyorick installation directory.
+ */
+pyorick_dir = current_include();
+pyorick_dir = strpart(pyorick_dir, strgrep(".*/", pyorick_dir));
 
 func pyorick(mode)
 /* DOCUMENT pyorick
@@ -82,7 +88,7 @@ local pydebug;
  *   debugging messages.
  */
 
-func py(command, ..)
+func py(arglist)
 /* DOCUMENT py                    exit pyorick terminal mode
  *       or py, "code", arglist   execute python code
  *       or py("expr", arglist)   return value of python expression
@@ -99,6 +105,7 @@ func py(command, ..)
  * SEE ALSO: pyorick
  */
 {
+  command = arglist(1);
   if (is_void(command)) {  /* exit yorick terminal mode */
     _pyorick_send, [_ID_EOL, 0];  /* tell python to exit terminal mode */
     /* write, format="%s", "ExitTerminalMode> "; */
@@ -112,7 +119,8 @@ func py(command, ..)
     dbexit, 0;  /* return, making sure we are out of dbug> mode */
 
   } else {
-    nargs = more_args();
+    nargs = arglist(0) - 1;
+    keys = arglist(-);
     command = strchar(command)(1:-1);
     isvar = anyof(command(0) == [':','=']);
     if (isvar) command = command(1:-1);
@@ -120,13 +128,15 @@ func py(command, ..)
     if (numberof(list)) command(list) = '\n';
     idx = hasval = 0;
     if (!isvar) {
-      if (nargs) {
+      if (nargs || numberof(keys)) {
         id = am_subroutine()? _ID_SUBCALL : _ID_FUNCALL;
       } else {
         id = am_subroutine()? _ID_EXEC : _ID_EVAL;
         idx = 1;
       }
     } else {
+      if (numberof(keys))
+        error, "python slice cannot accept keyword as index";
       if (am_subroutine()) {
         if (!nargs)
           error, "set python variable requires a value";
@@ -143,12 +153,19 @@ func py(command, ..)
     if (idx) msg = save(_pyorick_id=id, hdr, value=command);
     else msg = save(_pyorick_id=id, hdr, name=command);
     if (id == _ID_GETVAR) return msg;  /* reference to python variable */
-    if (nargs > 0) {
+    if (nargs>0 || numberof(keys)) {
       args = save();
-      while (nargs--) save, args, string(0), _pyorick_encode(next_arg(), 2);
+      for (i=1 ; i<=nargs-hasval ; ++i)
+        save, args, string(0), _pyorick_encode(arglist(1+i), 2);
+      for (i=1 ; i<=numberof(keys) ; ++i) {
+        name = strchar(keys(i))(1:-1);
+        key = save(_pyorick_id=_ID_SETVAR, hdr=[_ID_SETVAR,numberof(name)],
+                   name, value=_pyorick_encode(arglist(keys(i)), 2));
+        save, args, string(0), key;
+      }
       save, msg, args;
     }
-    if (hasval) save, msg, value=_pyorick_encode(next_arg(), 2);
+    if (hasval) save, msg, value=_pyorick_encode(arglist(1+nargs), 2);
 
     _pyorick_put, msg;
     v = _pyorick_decode(_pyorick_get());
@@ -159,6 +176,7 @@ func py(command, ..)
     error, "python reply undecodable";
   }
 }
+wrap_args, py;
 
 /* ------------------------------------------------------------------------ */
 /* remainder is not part of user interface, supports pyorick.py */
