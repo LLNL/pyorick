@@ -114,6 +114,15 @@ class Yorick(object):
   e = evaluate
   v = value
 
+  @property
+  def namespace(self):
+    return self.bare._namespace
+  @namespace.setter
+  def namespace(self, value):
+    if not isinstance(value, Mapping):
+      value = value.__dict__
+    self.bare._namespace = value
+
   def __call__(self, command=None, *args, **kwargs):  # pipe(command)
     """Execute a yorick command."""
     return self.call(command, *args, **kwargs)
@@ -123,6 +132,7 @@ class YorickBare(object):
   """Avoids circular references among Yorick, YorickHandle, and YorickVar."""
   def __init__(self, proc):
     self.proc = proc
+    self._namespace = server_namespace  # default namespace (__main__)
 
   def __del__(self):
     self.proc.kill()
@@ -136,6 +146,19 @@ class YorickBare(object):
   def _reqrep(self, msgid, *args, **kwargs):  # convenience for YorickHandle
     reply = Message()
     self.proc.reqrep(Message(msgid, *args, **kwargs), reply)
+    while reply.packets and reply.packets[0][0] >= ID_EVAL:
+      if self.proc._debug:
+        print("P>_reqrep: begin processing request (non-passive reply)")
+      reply = reply.getreply(self.proc._debug, self._namespace)
+      if not reply:
+        raise PYorickError("yorick sent unknown active reply to request")
+      if self.proc._debug:
+        print("P>_reqrep: sending reply to request")
+      self.proc.sendmsg(reply)
+      reply = Message()  # get the next reply from yorick
+      self.proc.recvmsg(reply)
+    if self.proc._debug:
+      print("P>_reqrep: got passive reply to original request")
     reply = reply.decode()
     if not isinstance(reply, tuple):
       return reply
@@ -224,7 +247,7 @@ class YorickHandle(object):
         command = '\05' + command[1:]
         typ = 1
     if command is None:
-      bare._server(server_namespace)
+      bare._server(bare._namespace)
     elif typ:
       rslt = bare._reqrep(ID_EVAL, command)
       if command[0] == '\05':
@@ -481,8 +504,6 @@ class YorickVarCall(object):
 class YorickServer(object):
   """Server to accept requests from and generate replies to yorick."""
   def __init__(self, namespace, debug=False):
-    if not isinstance(namespace, Mapping):
-      namespace = namespace.__dict__  # can pass module as well as its dict
     self.namespace = namespace
     self.debug = debug
 
@@ -499,65 +520,22 @@ class YorickServer(object):
   def reply(self, debug=False):
     """Return message to be sent in reply to self.request."""
     if debug:
-      print("P>reply: decoding")
-    req = self.request.decode()
+      print("P>server reply: decoding")
+    rep = self.request.getreply(debug, self.namespace)
     self.request = Message()  # empty container for next request
-    code = None
-    if isinstance(req, tuple):
+    if rep is False:
       if debug:
-        print("P>reply: req[0]="+str(req[0]))
-      if req[0]==ID_EOL and not req[1][0]:
-        # this is signal to exit terminal mode (matches start command)
-        return None
-      if req[0] in [ID_EXEC, ID_EVAL, ID_GETVAR, ID_SETVAR,
-                    ID_FUNCALL, ID_SUBCALL, ID_GETSLICE, ID_SETSLICE]:
-        text = req[1][0].replace('\0', '\n')
-        if req[0] == ID_SETVAR:
-          self.namespace['_pyorick_setvar_rhs_'] = req[1][-1]
-          text += '=_pyorick_setvar_rhs_'
-          # note: if locals dict specified, must prepend "global varname;"
-        try:
-          if req[0] in [ID_EXEC, ID_SETVAR]:
-            if not text:
-              # alternate signal to exit terminal mode (if no start command)
-              return None
-            code = compile(text, '<pyorick command>', 'exec')
-          else:
-            code = compile(text, '<pyorick command>', 'eval')
-          if debug:
-            print("P>reply: compiled text="+text)
-        except SyntaxError:
-          if debug:
-            print("P>reply: syntax error, text="+text)
-          code = None
-    if code:
+        print("P>server reply: got signal to exit terminal mode")
+      return None   # signal to exit terminal mode
+    if isinstance(rep, Message):
       self.started = True
-      try:
-        # first, eval the text sent as command or variable name
-        obj = eval(code, self.namespace)
-        rslt = None
-        if req[0] in [ID_EXEC, ID_EVAL, ID_GETVAR, ID_SETVAR]:
-          rslt = obj
-          if req[0] == ID_SETVAR:
-            del self.namespace['_pyorick_setvar_rhs_']
-        elif req[0] in [ID_FUNCALL, ID_SUBCALL]:
-          rslt = obj(*req[1][1:], **req[2])
-          if req[0] == ID_SUBCALL:
-            rslt = None  # discard any return value
-        elif req[0] == ID_GETSLICE:
-          rslt = obj[req[1][1:]]
-        elif req[0] == ID_SETSLICE:
-          obj[req[1][1:]] = req[1][-1]
-        return Message(None, rslt)
-      except:
-        if debug:
-          raise
-        # any exceptions trying to eval or encode reply are yorick's problem
-        pass
-    elif not self.started:
+      return rep
+    if not self.started:   # assume yorick never entered terminal mode
+      if debug:
+        print("P>server reply: yorick never entered terminal mode")
       self.request = None
-      return None   # assume that yorick never entered terminal mode
-    return Message(ID_EOL, 1)  # signal error to yorick
+      return None
+    return Message(ID_EOL, 1)  # yorick needs error to continue
 
   # Provide two cleanup options:
   # 1. finish() or finish(command)  to optionally send a final yorick command
@@ -647,6 +625,79 @@ class Message(object):
       raise PYorickError("cannot decode empty message")
     self.pos = 1  # pos=0 already processed here
     return codec.idtable[self.packets[0][0]].decoder(self)
+
+  def getreply(self, debug=False, namespace=None):
+    """Return message to be sent in reply to this request."""
+    if debug:
+      print("P>getreply: decoding")
+    if namespace is None:
+      namespace = server_namespace
+    elif not isinstance(namespace, Mapping):
+      namespace = namespace.__dict__
+    # decode presumed request message
+    # returns:
+    # Message   reply, including EOL for syntax or
+    # None      if not a recognized request
+    # False     if signal to exit terminal mode
+    req = self.decode()
+    code = None
+    if isinstance(req, tuple):
+      if debug:
+        print("P>getreply: req[0]="+str(req[0]))
+      if req[0] in [ID_EXEC, ID_EVAL, ID_GETVAR, ID_SETVAR,
+                    ID_FUNCALL, ID_SUBCALL, ID_GETSLICE, ID_SETSLICE]:
+        text = req[1][0].replace('\0', '\n')
+        if req[0] == ID_SETVAR:
+          namespace['_pyorick_setvar_rhs_'] = req[1][-1]
+          text += '=_pyorick_setvar_rhs_'
+          # note: if locals dict specified, must prepend "global varname;"
+        try:
+          if req[0] in [ID_EXEC, ID_SETVAR]:
+            if not text:
+              # alternate signal to exit terminal mode (if no start command)
+              if debug:
+                print("P>getreply: got exit terminal signal")
+              return False
+            code = compile(text, '<pyorick command>', 'exec')
+          else:
+            code = compile(text, '<pyorick command>', 'eval')
+          if debug:
+            print("P>getreply: compiled text="+text)
+        except SyntaxError:
+          if debug:
+            print("P>getreply: syntax error, text="+text)
+          return Message(ID_EOL, 1)  # reply with error to yorick
+      elif req[0]==ID_EOL and not req[1][0]:
+        # this is signal to exit terminal mode (matches start command)
+        if debug:
+          print("P>getreply: got exit terminal signal")
+        return False
+    if code:
+      try:
+        # first, eval the text sent as command or variable name
+        obj = eval(code, namespace)
+        rslt = None
+        if req[0] in [ID_EXEC, ID_EVAL, ID_GETVAR, ID_SETVAR]:
+          rslt = obj
+          if req[0] == ID_SETVAR:
+            del namespace['_pyorick_setvar_rhs_']
+        elif req[0] in [ID_FUNCALL, ID_SUBCALL]:
+          rslt = obj(*req[1][1:], **req[2])
+          if req[0] == ID_SUBCALL:
+            rslt = None  # discard any return value
+        elif req[0] == ID_GETSLICE:
+          rslt = obj[req[1][1:]]
+        elif req[0] == ID_SETSLICE:
+          obj[req[1][1:]] = req[1][-1]
+        return Message(None, rslt)
+      except:
+        if debug:
+          print("P>getreply: execution error")
+          raise
+        # any exceptions trying to eval or encode reply are yorick's problem
+        pass
+      return Message(ID_EOL, 1)  # reply with error to yorick
+    return None
 
 # Here is a pseudo-bnf description of the message grammar:
 #
@@ -1512,22 +1563,15 @@ class PipeProcess(Process):
       self.reqrep(Message(ID_SETVAR, "pydebug", int(on)), reply)
       self._debug = on
 
-  def reqrep(self, request, reply, supress=False):
-    self.echo_pty()  # flush any pending output
-    if self.pid is None:
-      raise PYorickError("no yorick process running")
-    if not supress:
-      self.send0("pyorick;")  # tell yorick to read pipe for request
-    if self._debug:
-      print("P>reqrep: request="+str(request.packets[0]))
+  def sendmsg(self, request):
     try:  # send request
       for packet in request.packets:
         self.send(packet)
     except:
       self.kill()
       raise PYorickError("failed to send complete message, yorick killed")
-    if self._debug:
-      print("P>reqrep: blocking for reply...")
+
+  def recvmsg(self, reply):
     prompt = None
     try:  # receive reply
       for packet in reply.reader():
@@ -1537,25 +1581,42 @@ class PipeProcess(Process):
             break
           prompt = self.echo_pty()
           if prompt == 'PYORICK-QUIT> ':
-            return
+            return prompt
         self.recv(packet)
     except:
       self.kill()
       raise PYorickError("failed to receive complete message, yorick killed")
+    if prompt == 'PYORICK-QUIT> ':
+      return  # yorick has quit
     if self._debug:
       print("P>reqrep: reply="+str(reply.packets[0]))
     if reply.packets[0][0]==ID_EOL and reply.packets[0][1]==-1:
       self.kill(True)
       reply.packets[0][0] = ID_NIL
-    elif not prompt:
+    elif (not prompt) and reply.packets[0][0]<ID_EVAL:
       # not finished until yorick comes back to its prompt
       self.wait_for_prompt()
+
+  def reqrep(self, request, reply, supress=False):
+    self.echo_pty()  # flush any pending output
+    if self.pid is None:
+      raise PYorickError("no yorick process running")
+    if not supress:
+      self.send0("pyorick;")  # tell yorick to read pipe for request
+    if self._debug:
+      print("P>reqrep: request="+str(request.packets[0]))
+    self.sendmsg(request)
+    if self._debug:
+      print("P>reqrep: blocking for reply...")
+    self.recvmsg(reply)
 
   def interact(self, server):
     if self.pid is None:
       raise PYorickError("no yorick process running")
     self.echo_pty()  # flush out any pending output
     server.start()
+    if self._debug:
+      print("P>interact: telling yorick to enter terminal mode")
     self.send0("pyorick, -1;")  # tell yorick to enter terminal mode
     # handshake for yorick never entering terminal mode below
     prompt = None
@@ -1570,6 +1631,8 @@ class PipeProcess(Process):
           for packet in server.request.reader():
             self.recv(packet)
           rep = server.reply(self._debug)
+          if self._debug:
+            print("P>interact: reply ready to send? "+str(bool(rep)))
           if rep:
             for packet in rep.packets:
               self.send(packet)  # yorick is blocked waiting for this

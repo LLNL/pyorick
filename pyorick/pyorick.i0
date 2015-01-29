@@ -73,11 +73,13 @@ func pyorick(mode)
     _pyorick_mode = 1n;
     set_idler, , 0;
     after_error = [];
+    if (pydebug) write, "Y>yorick has entered terminal mode";
   } else {
     _pyorick_mode = (mode != 0);
     if (_pyorick_mode) set_idler, , 4;
     else set_idler, _pyorick_idler, 4;
     after_error = _pyorick_err_handler;
+    if (pydebug) write, format=" Y>yorick mode = %d\n", _pyorick_mode;
   }
 }
 
@@ -148,7 +150,7 @@ func py(arglist)
       }
     }
     if (pydebug)
-      write, format="Y>py id=%ld, nargs=%ld, hasval=%ld\n", id, nargs, hasval;
+      write, format=" Y>py id=%ld, nargs=%ld, hasval=%ld\n", id, nargs, hasval;
     hdr = [id, numberof(command)];
     if (idx) msg = save(_pyorick_id=id, hdr, value=command);
     else msg = save(_pyorick_id=id, hdr, name=command);
@@ -167,8 +169,10 @@ func py(arglist)
     }
     if (hasval) save, msg, value=_pyorick_encode(arglist(1+nargs), 2);
 
+    if (pydebug) write, "Y>py sending active request";
     _pyorick_put, msg;
     v = _pyorick_decode(_pyorick_get());
+    if (pydebug) write, "Y>py decoded reply to active request";
     if (is_obj(value, _pyorick_id, 1))
       return v;  /* ordinary passive value */
     if (allof(v(hdr) == [_ID_EOL,1]))
