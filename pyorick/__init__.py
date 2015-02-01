@@ -170,4 +170,5 @@ raise an exception in yorick.
 from .pyorick import *
 
 # limit names exported by "from pyorick import *"
-__all__ = ['Yorick', 'PYorickError', 'ynewaxis', 'ystring0', 'yencodable']
+__all__ = ['Yorick', 'PYorickError', 'Key2AttrWrapper',
+           'ynewaxis', 'ystring0', 'yencodable']

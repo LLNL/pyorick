@@ -196,9 +196,46 @@ def yencodable(value):
 
 ########################################################################
 
-server_namespace = __main__.__dict__  # for YorickServer
+server_namespace = __main__.__dict__  # for python code invoked by yorick
 
-class YorickHandle(object):
+class Key2Attr(object):
+  """Base class to convert attributes to keys, s/getattr --> s/getitem."""
+  def __getattr__(self, name):                   # pipe.name
+    """Convert get attribute to get item."""
+    # inspect module causes serious problems by probing for names
+    # ipython also probes for getdoc attribute
+    if (len(name)>3 and name[0:2]=='__' and name[-2:]=='__') or name=='getdoc':
+      raise AttributeError("Key2Attr instance has no attribute '"+name+"'")
+    if name not in self.__dict__:  # unnecessary?  never false?
+      return self[name]
+    else:
+      return self.__dict__[name]
+  def __setattr__(self, name, value):
+    """Convert set attribute to set item."""
+    if name not in self.__dict__:
+      self[name] = value
+    else:
+      object.__setattr__(self, name, value)
+
+# this is intended to wrap yorick file handles or oxy objects
+class Key2AttrWrapper(Key2Attr):
+  """Wrap an arbitrary object so its attributes become its mapping keys."""
+  def __init__(self, obj):
+    self.__dict__['_key2attr__'] = obj
+  # eventually may want to retain more extensive set of obj methods
+  def __repr__(self):
+    s = "<Key2Attr wrapper for {0}>"
+    return s.format(repr(self.__dict__['_key2attr__']))
+  def __nonzero__(self):
+    return bool(self.__dict__['_key2attr__'])
+  def __getitem__(self, key=None):
+    return self.__dict__['_key2attr__'][key]
+  def __setitem__(self, key, value):
+    self.__dict__['_key2attr__'][key] = value
+  def __call__(self, command=None, *args, **kwargs):
+    return self.__dict__['_key2attr__'](*args, **kwargs)
+
+class YorickHandle(Key2Attr):
   """Object whose attributes are yorick variables.
 
   Do not attempt to probe with hasattribute or other introspection!
@@ -233,6 +270,14 @@ class YorickHandle(object):
       return bare._reqrep(ID_GETVAR, key)
     return YorickVarDerived(bare, typ, key)
 
+  def __setitem__(self, key, value):
+    """Implement handle.name = value."""
+    bare = self.__dict__['_yorick__']
+    if key not in self.__dict__:
+      bare._reqrep(ID_SETVAR, key, value)
+    else:
+      object.__setattr__(self, key, value)
+
   def __call__(self, command=None, *args, **kwargs):
     """Implement handle(command) or handle(format, args, key=kwds)."""
     if args or kwargs:
@@ -255,27 +300,6 @@ class YorickHandle(object):
       return rslt
     else:
       return bare._reqrep(ID_EXEC, command)
-
-  def __setattr__(self, name, value):
-    """Implement handle.name = value."""
-    bare = self.__dict__['_yorick__']
-    if name not in self.__dict__:
-      bare._reqrep(ID_SETVAR, name, value)
-    else:
-      object.__setattr__(self, name, value)
-
-  def __getattr__(self, name):                   # pipe.name
-    # inspect module causes serious problems by probing for names
-    # ipython also probes for getdoc attribute
-    if (len(name)>3 and name[0:2]=='__' and name[-2:]=='__') or name=='getdoc':
-      raise AttributeError("YorickHandle instance has no attribute '"+name+"'")
-    if name in ['_reftype__', '_yorick__']:
-      return self.__dict__[name]
-    bare = self.__dict__['_yorick__']
-    typ = self.__dict__['_reftype__']
-    if typ == 2:
-      return bare._reqrep(ID_GETVAR, name)
-    return YorickVarDerived(bare, typ, name)
 
 class YorickVar(object):
   """Reference to a yorick variable."""

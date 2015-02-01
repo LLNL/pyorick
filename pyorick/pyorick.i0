@@ -270,8 +270,6 @@ func _pyorick_send(x) { return fd_write(_pyorick_wfd, x); }
  * _pyorick_decode
  *    Decode passive messages from the uninterpreted form returned by
  *    _pyorick_get.  Most of the work is for string array and lst/dct objects.
- * _pyorick_setslice
- *    The SETSLICE active message needs this special helper function.
  * _pyorick_encode
  *    Produce the passive message representing the yorick value which
  *    is the response to the python request.  The format is the same as
@@ -484,18 +482,9 @@ func _pyorick_unparse(msg, raw)
     if (!raw) error, "expecting active message";
     if (id == _ID_NIL) {
       txt = "[]";
-    } else if (raw!=3 || id!=_ID_STRING) {
+    } else {
       save, __, string(0), _pyorick_decode(msg);
       txt = "__(" + totxt(__(*)) + ")";
-    } else {  /* GETSLICE with string is get_member for yorick */
-      /* name(        -->  get_member(name,"msg")(
-       * name(index,  -->  get_member(name(index),"msg")(
-       */
-      s = ",\"" + _pyorick_decode(msg) +"\")(";
-      n = _pyorick_gms(0);
-      len = strlen(txt);
-      if (strpart(txt, len:len) == ",") s = ")" + s;
-      txt = streplace(txt, [n,n,len-1,len], ["get_member(", s]);
     }
 
   } else if (id==_ID_EVAL || id==_ID_EXEC) {
@@ -531,30 +520,38 @@ func _pyorick_unparse(msg, raw)
 
   } else {
     if (raw && id!=_ID_FUNCALL) error, "illegal argument or index";
-    extern _pyorick_gms;
-    if (!raw) _pyorick_gms = [-10000000];
     args = msg(args);  /* args always an oxy object, no copy here */
     n = args(*);
-    if (id==_ID_FUNCALL || id==_ID_GETSLICE) {
+    if (id==_ID_FUNCALL || id>=_ID_GETSLICE) {
       name = _pyorick_name(msg(name), raw, _pyorick_hold, pfx);
       txt = (raw? "" : pfx) + name + "(";
-      if (id == _ID_GETSLICE) grow, _pyorick_gms, (raw?0:strlen(pfx));
+      off = raw? 0 : strlen(pfx);
     } else if (id == _ID_SUBCALL) {
       txt = _pyorick_name(msg(name)) + (n? "," : "");
-    } else if (id == _ID_SETSLICE) {
-      txt = "_pyorick_setslice," + _pyorick_name(msg(name)) + "," +
-        _pyorick_unparse(msg(value), 1) + ",";
     }
     for (i=1 ; i<=n ; ++i) {
-      txt += _pyorick_unparse(args(noop(i)), 2+(id>=_ID_GETSLICE));
-      if (i < n) txt += ",";
+      a = args(noop(i));  /* args is a msg object, no copy here */
+      if (id>=_ID_GETSLICE && a(_pyorick_id)==_ID_STRING) {
+        /* immediate string index to slice operation means member extract
+         * name(        -->  get_member(name,"msg")(
+         * name(index,  -->  get_member(name(index),"msg")(
+         */
+        s = ",\"" + _pyorick_decode(a) + "\")(";  /* assume no " in string */
+        len = strlen(txt);
+        if (strpart(txt, len:len) == ",") s = ")" + s;
+        txt = streplace(txt, [off,off,len-1,len], ["get_member(", s]);
+      } else {
+        txt += _pyorick_unparse(a, 2+(id>=_ID_GETSLICE));
+        if (i < n) txt += ",";
+      }
     }
     if (id==_ID_FUNCALL) {
       txt += ")";
-    } else if (id == _ID_GETSLICE) {
-      _pyorick_gms = _pyorick_gms(1:-1);
+    } else if (id >= _ID_GETSLICE) {
       if (strpart(txt, -1:0) == ")(") txt = strpart(txt, 1:-1);
       else txt += ")";
+      if (id == _ID_SETSLICE)
+        txt += "=" + _pyorick_unparse(msg(value), 1);
     }
   }
   return txt;
@@ -638,40 +635,6 @@ func _pyorick_shape(a)
   } else {
     return [-9];
   }
-}
-
-func _pyorick_setslice(a, value, ..)
-{
-  n = more_args();
-  if (n == 0) 
-    a() = value;  /* probably an error */
-  else if (n == 1)
-    a(next_arg()) = value;
-  else if (n == 2)
-    a(next_arg(), next_arg()) = value;
-  else if (n == 3)
-    a(next_arg(), next_arg(), next_arg()) = value;
-  else if (n == 4)
-    a(next_arg(), next_arg(), next_arg(), next_arg()) = value;
-  else if (n == 5)
-    a(next_arg(), next_arg(), next_arg(), next_arg(), next_arg()) = value;
-  else if (n == 6)
-    a(next_arg(), next_arg(), next_arg(), next_arg(), next_arg(),
-      next_arg()) = value;
-  else if (n == 7)
-    a(next_arg(), next_arg(), next_arg(), next_arg(), next_arg(),
-      next_arg(), next_arg()) = value;
-  else if (n == 8)
-    a(next_arg(), next_arg(), next_arg(), next_arg(), next_arg(),
-      next_arg(), next_arg(), next_arg()) = value;
-  else if (n == 9)
-    a(next_arg(), next_arg(), next_arg(), next_arg(), next_arg(),
-      next_arg(), next_arg(), next_arg(), next_arg()) = value;
-  else if (n == 10)
-    a(next_arg(), next_arg(), next_arg(), next_arg(), next_arg(),
-      next_arg(), next_arg(), next_arg(), next_arg(), next_arg()) = value;
-  else
-    error, "cannot accept more than 10 dimensions";
 }
 
 func _pyorick_encode(value, env)
