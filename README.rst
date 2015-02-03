@@ -19,5 +19,5 @@ anything yorick sends to stdout or stderr except prompts.
 
 See `DESCRIPTION.rst <https://github.com/dhmunro/pyorick/blob/master/DESCRIPTION.rst>`_
 for a complete description of the interface.  You can clone or fork
-https://github.com/dhmunro/pyorick to contriute to pyorick.
+https://github.com/dhmunro/pyorick to contribute to pyorick.
 
