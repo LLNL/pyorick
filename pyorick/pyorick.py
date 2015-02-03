@@ -144,6 +144,11 @@ class YorickBare(object):
     return bool(self.proc)
 
   def _reqrep(self, msgid, *args, **kwargs):  # convenience for YorickHandle
+    hold = args[0]
+    if hold and isinstance(hold, basestring) and hold[0]=='\05':
+      hold = True
+    else:
+      hold = False
     reply = Message()
     self.proc.reqrep(Message(msgid, *args, **kwargs), reply)
     while reply.packets and reply.packets[0][0] >= ID_EVAL:
@@ -161,7 +166,11 @@ class YorickBare(object):
       print("P>_reqrep: got passive reply to original request")
     reply = reply.decode()
     if not isinstance(reply, tuple):
-      return reply
+      if not hold:
+        return reply
+      if (isinstance(reply, np.ndarray) and reply.dtype==np.dtype(c_long)
+          and reply.shape==()):
+        return YorickHold(self, reply)
     if reply == (ID_EOL, (2,), {}):
       if msgid == ID_GETVAR:
         return YorickVarDerived(self, 0, args[0])
@@ -296,7 +305,7 @@ class YorickHandle(Key2Attr):
     elif typ:
       rslt = bare._reqrep(ID_EVAL, command)
       if command[0] == '\05':
-        return YorickHold(bare, rslt)
+        return rslt
       return rslt
     else:
       return bare._reqrep(ID_EXEC, command)
@@ -404,8 +413,8 @@ class YorickVar(object):
   def is_obj(self): return self.info[0] == -8  # oxy obj not list or dict
   @property
   def shape(self):
-    if self.info >= 0:
-      return self._info[-1:0:-1]
+    if self.info[0] >= 0:
+      return self._info[-1:1:-1]
     else:
       return None
   @property
@@ -484,7 +493,10 @@ class YorickHold(YorickVar):
 
   def __del__(self):  # free use of value in yorick
     if (self.bare):
-      self.bare._reqrep(ID_EXEC, "_pyorick_refs,1,"+self.name)
+      name = self.name
+      if name[0] == '\05':
+        name = name[1:]
+      self.bare._reqrep(ID_EXEC, "_pyorick_refs,1,"+name)
 
 class YorickVarCall(object):
   """Reference to anonymous yorick variable callable only."""

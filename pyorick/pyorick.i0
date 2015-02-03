@@ -157,7 +157,7 @@ func py(arglist)
     if (id == _ID_GETVAR) return msg;  /* reference to python variable */
     if (nargs>0 || numberof(keys)) {
       args = save();
-      for (i=1 ; i<=nargs-hasval ; ++i)
+      for (i=1 ; i<=nargs ; ++i)
         save, args, string(0), _pyorick_encode(arglist(1+i), 2);
       for (i=1 ; i<=numberof(keys) ; ++i) {
         name = strchar(keys(i))(1:-1);
@@ -167,13 +167,13 @@ func py(arglist)
       }
       save, msg, args;
     }
-    if (hasval) save, msg, value=_pyorick_encode(arglist(1+nargs), 2);
+    if (hasval) save, msg, value=_pyorick_encode(arglist(2+nargs), 2);
 
     if (pydebug) write, "Y>py sending active request";
     _pyorick_put, msg;
     v = _pyorick_decode(_pyorick_get());
     if (pydebug) write, "Y>py decoded reply to active request";
-    if (is_obj(value, _pyorick_id, 1))
+    if (is_obj(v, _pyorick_id, 1))
       return v;  /* ordinary passive value */
     if (allof(v(hdr) == [_ID_EOL,1]))
       error, "python reported error";
@@ -700,9 +700,10 @@ func _pyorick_encode(value, env)
       }
 
     } else {  /* unencodable value, indicate variable reference */
-      if (env==1) msg = save(_pyorick_id=_ID_EOL, hdr=[_ID_EOL,2], value=[]);
-      else msg = "unencodable value";
+      msg = "unencodable value";
     }
+    if (env==1 && !is_obj(msg))
+      msg = save(_pyorick_id=_ID_EOL, hdr=[_ID_EOL,2], value=[]);
 
   } else {
     /* special or active value */

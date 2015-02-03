@@ -2,10 +2,13 @@ import unittest
 import numpy as np
 from pyorick import *    # pyorick exposes only intended APIs
 # non-APIs which must be exposed for testing
-from pyorick import Message, YorickVar
+from pyorick import Message, YorickVar, YorickHold, YorickVarCall
 from pyorick import (ID_EOL, ID_EVAL, ID_EXEC, ID_GETVAR, ID_SETVAR,
                      ID_FUNCALL, ID_SUBCALL, ID_GETSLICE, ID_SETSLICE,
                      ID_GETSHAPE)
+import __main__
+
+# nosetests --with-coverage --cover-package=pyorick
 
 class ExampleClass(object):
     def __init__(self, thing):
@@ -313,6 +316,59 @@ func test(a, b=) {
         self.assertEqual(i, (6, 1, 2), 'process failed on getshape')
         i = self.yo.evaluate.test.info
         self.assertEqual(i, (-1,), 'process failed on getshape')
+
+    def test_hold(self):
+        """Check that all requests can be sent and received."""
+        # exec, eval, getvar, setvar already tested above
+        #f = self.yo.e.create('~/gh/pyorick/junk')
+        #self.yo.e.write(f, 'this is a test')
+        #del f
+        self.yo("""
+struct PyTest {
+  long mema;
+  double memb(2,3);
+  char memc;
+}
+""")
+        struct = self.yo.e.PyTest(mema=-7, memb=[[11,12],[21,22],[31,32]],
+                                  memc=65)
+        self.assertEqual(struct['mema'], -7, 'string valued index failed')
+        self.assertEqual(struct['memb',2,3], 32, 'string mixed index failed')
+        s = Key2AttrWrapper(struct)
+        self.assertEqual(s.memc, 65, 'Key2AttrWrapper get failed')
+        s.memc = 97
+        self.assertEqual(s.memc, 97, 'Key2AttrWrapper set failed')
+        s = self.yo.e.random.hold(1000, 1001)
+        self.assertTrue(isinstance(s, YorickVar), 'hold attribute failed')
+        del struct  # checks that deleting held reference works
+        self.yo.v.t = self.yo.e.noop(s)
+        self.assertEqual(self.yo.e.t.shape, (1001,1000),
+                         'passing held reference as argument failed')
+        s = s[5,None]  # implicitly deletes object after retrieving one column
+        self.assertEqual(s.shape, (1001,), 'indexing held reference failed')
+        s = self.yo.e('@t')
+        self.assertTrue(isinstance(s, YorickVar), 'hold @-syntax failed')
+        self.assertEqual(s.shape, (1001,1000),
+                         'held reference attribute failed')
+        del s
+        self.yo.v.t = None
+
+    def test_recurse(self):
+        """Check that a yorick reply can contain python requests."""
+        self.yo("""
+func recursive(x) {
+  extern _recur;
+  if (!_recur) { _recur=1; py, "import numpy as np"; }
+  y = py("np.array", [x, 1-x]);
+  py, "var=", 1+x;
+  return py("var") - x;
+}
+""")
+        self.yo.c.recursive(2)
+        self.assertEqual(__main__.var, 3, 'recursive request set failed')
+        self.assertEqual(self.yo.e.recursive(2), 1,
+                         'recursive request reply value failed')
+
 
 if __name__ == '__main__':
     unittest.main()
