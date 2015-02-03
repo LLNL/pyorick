@@ -1,5 +1,11 @@
 #!/usr/bin/env python
 
+# to upload to pypi:
+# <switch to setuptools branch, merge with master>
+# git clean -fdx
+#   first time: python setup.py register
+# python setup.py sdist bdist_wheel upload
+
 from __future__ import print_function
 from setuptools import setup, Command
 
@@ -34,7 +40,7 @@ class TestCommand(Command):
 # or py.test or python -m unittest -v test_pyorick to test pyorick.
 
 setup(name='pyorick',
-      version='1.2',
+      version='1.3',
       description='python connection to yorick',
       long_description=open('README.rst').read(),
       author='David Munro and John Field',

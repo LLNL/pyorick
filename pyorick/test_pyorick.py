@@ -2,10 +2,13 @@ import unittest
 import numpy as np
 from pyorick import *    # pyorick exposes only intended APIs
 # non-APIs which must be exposed for testing
-from pyorick import Message, YorickVar
+from pyorick import Message, YorickVar, YorickHold, YorickVarCall
 from pyorick import (ID_EOL, ID_EVAL, ID_EXEC, ID_GETVAR, ID_SETVAR,
                      ID_FUNCALL, ID_SUBCALL, ID_GETSLICE, ID_SETSLICE,
                      ID_GETSHAPE)
+import __main__
+
+# nosetests --with-coverage --cover-package=pyorick
 
 class ExampleClass(object):
     def __init__(self, thing):
@@ -59,6 +62,7 @@ class TestCodec(unittest.TestCase):
         """Check that scalar types can be encoded and decoded."""
         for i in range(len(self.scalars)):
             s = self.scalars[i]
+            self.assertTrue(yencodable(s), 'yencodable fails item '+str(i))
             msg = Message(None, s)
             v = msg.decode()
             self.assertEqual(s, v, 'codec failed on item '+str(i))
@@ -67,6 +71,7 @@ class TestCodec(unittest.TestCase):
         """Check that array types can be encoded and decoded."""
         for i in range(len(self.arrays)):
             s = self.arrays[i]
+            self.assertTrue(yencodable(s), 'yencodable fails item '+str(i))
             msg = Message(None, s)
             v = msg.decode()
             self.assertTrue(np.array_equal(np.array(s), v),
@@ -76,6 +81,7 @@ class TestCodec(unittest.TestCase):
         """Check that string types can be encoded and decoded."""
         for i in range(len(self.strings)):
             s = self.strings[i]
+            self.assertTrue(yencodable(s), 'yencodable fails item '+str(i))
             msg = Message(None, s)
             v = msg.decode()
             if isinstance(s, np.ndarray):
@@ -86,6 +92,7 @@ class TestCodec(unittest.TestCase):
         """Check that group types can be encoded and decoded."""
         for i in range(len(self.groups)):
             s = self.groups[i]
+            self.assertTrue(yencodable(s), 'yencodable fails item '+str(i))
             msg = Message(None, s)
             v = msg.decode()
             if isinstance(s, tuple):
@@ -95,8 +102,10 @@ class TestCodec(unittest.TestCase):
     def test_bad(self):
         """Check that unencodable types cannot be encoded."""
         for i in range(len(self.bad)):
+            s = self.bad[i]
+            self.assertFalse(yencodable(s), 'yencodable fails item '+str(i))
             with self.assertRaises(PYorickError) as cm:
-                msg = Message(None, self.bad[i])
+                msg = Message(None, s)
             self.assertIsInstance(cm.exception, PYorickError,
                                   'codec failed on item '+str(i))
 
@@ -304,10 +313,62 @@ func test(a, b=) {
         self.assertEqual(self.yo.v.testv.tolist(), [3.0, 2.0],
                          'process failed on setslice, python semantics')
         i = self.yo.evaluate.testv.info
-        self.assertEqual(i.tolist(), [6, 1, 2],
-                         'process failed on getshape')
+        self.assertEqual(i, (6, 1, 2), 'process failed on getshape')
         i = self.yo.evaluate.test.info
-        self.assertEqual(i, [-1], 'process failed on getshape')
+        self.assertEqual(i, (-1,), 'process failed on getshape')
+
+    def test_hold(self):
+        """Check that all requests can be sent and received."""
+        # exec, eval, getvar, setvar already tested above
+        #f = self.yo.e.create('~/gh/pyorick/junk')
+        #self.yo.e.write(f, 'this is a test')
+        #del f
+        self.yo("""
+struct PyTest {
+  long mema;
+  double memb(2,3);
+  char memc;
+}
+""")
+        struct = self.yo.e.PyTest(mema=-7, memb=[[11,12],[21,22],[31,32]],
+                                  memc=65)
+        self.assertEqual(struct['mema'], -7, 'string valued index failed')
+        self.assertEqual(struct['memb',2,3], 32, 'string mixed index failed')
+        s = Key2AttrWrapper(struct)
+        self.assertEqual(s.memc, 65, 'Key2AttrWrapper get failed')
+        s.memc = 97
+        self.assertEqual(s.memc, 97, 'Key2AttrWrapper set failed')
+        s = self.yo.e.random.hold(1000, 1001)
+        self.assertTrue(isinstance(s, YorickVar), 'hold attribute failed')
+        del struct  # checks that deleting held reference works
+        self.yo.v.t = self.yo.e.noop(s)
+        self.assertEqual(self.yo.e.t.shape, (1001,1000),
+                         'passing held reference as argument failed')
+        s = s[5,None]  # implicitly deletes object after retrieving one column
+        self.assertEqual(s.shape, (1001,), 'indexing held reference failed')
+        s = self.yo.e('@t')
+        self.assertTrue(isinstance(s, YorickVar), 'hold @-syntax failed')
+        self.assertEqual(s.shape, (1001,1000),
+                         'held reference attribute failed')
+        del s
+        self.yo.v.t = None
+
+    def test_recurse(self):
+        """Check that a yorick reply can contain python requests."""
+        self.yo("""
+func recursive(x) {
+  extern _recur;
+  if (!_recur) { _recur=1; py, "import numpy as np"; }
+  y = py("np.array", [x, 1-x]);
+  py, "var=", 1+x;
+  return py("var") - x;
+}
+""")
+        self.yo.c.recursive(2)
+        self.assertEqual(__main__.var, 3, 'recursive request set failed')
+        self.assertEqual(self.yo.e.recursive(2), 1,
+                         'recursive request reply value failed')
+
 
 if __name__ == '__main__':
     unittest.main()

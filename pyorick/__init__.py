@@ -3,109 +3,144 @@
 
 """Interface to a yorick process.
 
-yo = Yorick()      start a yorick process
-yo.kill()          kill a yorick process
+See the DESCRIPTION.rst file in the pyorick source distribution for
+more detailed explanations.
 
+yo = Yorick()      start a yorick process
 yo('code')         execute code in yorick, return None
 v = yo('=expr')    execute expr in yorick, return value
 
-Three different handles to the yorick process provide a nicer interface:
-  chandle = yo.call      call-semantics handle
-  ehandle = yo.evaluate  eval-semantics handle
-  vhandle = yo.value     value-semantics handle
-  chandle, ehandle, vhandle = yo.handles(7)
-For interactive use, you may abbreviate
-yo.call as yo.c, yo.evaluate as yo.e, and yo.value as yo.v.
+yo.v  or  yo.value      value-semantics handle
+yo.e  or  yo.evaluate   evaluate-semantics handle
+yo.c  or  yo.call       call-semantics handle
+  yo.v[''] or yo.e[''] or yo.c[''] return a copy of the parent yo object
 
-Attributes of any handle object represent yorick variables, for example:
-  yo.v.var = <expr>   sets the yorick variable var to the python <expr>
-  yo.v.var            in a python expression gets the yorick variable var
-The three types of handles come into play when the yorick variable is a
-function rather than data, or when you want to refer to data stored in a
-yorick variable without moving the entire array from yorick to python.
+yo.c('code')      same as yo('code'), parses and executes code
+yo.e('expr')      same as yo('=expr'), returns expr value
+  yo(string, a, b, ...)   or   yo.e(string, a, b, ...)
+  -shorthand for string.format(a,b,...) passed to yo or yo.e (or yo.c)
+yo.v.var          returns value of yorick variable var
+yo.v.var = expr   sets value of yorick variable var to expr
+  yo.e.var=expr  or  yo.c.var=expr   same as yo.v.var=expr
+yo.e.fun(arglist)   returns value of yorick expression fun(arglist)
+yo.c.fun(arglist)   calls yorick function as subroutine fun,arglist
+yo.e.ary[ndxlist]   returns value of yorick expression ary(ndxlist)
+yo.c.ary[ndxlist]     same, but numpy ndxlist semantics
+yo.e.ary[ndxlist] = expr   sets yorick array slice ary(ndxlist)=expr
+yo.c.ary[ndxlist] = expr     same, but numpy ndxlist semantics
 
-Python has only one syntax for invoking functions, whereas yorick has two
--- one to invoke the function and return its value, the other to invoke
-the function as a subroutine, discarding its value.  The eval-semantics
-handle produces yorick function references which return a value, whereas
-the call-semantics handle produces yorick functions which will be invoked
-as subroutines:
-  yo.e.atan(<expr>)   returns yorick atan(<expr>)
-  yo.c.plg(y, x)      invokes yorick plg,y,x
-You can pass both positional and keyword arguments to either type of
-function reference:
-  yo.c.plg(y, x, color='red')
+An arglist may include both positional and keyword arguments.  Note
+that python syntax requires all keyword arguments to follow all
+positional arguments (although yorick syntax does not).
 
-Thus, you usually want to use yo.v to set or get array data in yorick
-variables, yo.c to call yorick functions as subroutines (discarding any
-result), yo.e to return a yorick function value, and yo('code') to
-parse yorick code (for example, to define an interpreted function).
-The exception is, when you want to set or get only a part of a yorick
-array, because the whole array is very large and you don't want the
-performance penalty of transmitting the whole thing to or from yorick.
-To do that, use the evaluate instead of the value handle:
-  yo.e.var[ndx1, ndx2, ...] = <expr>  # set a slice of yorick array var
-  yo.e.var[ndx1, ndx2, ...]           # get a slice of yorick array var
-Each ndxI expression can be a scalar value, a list of integers, or a
-slice start:stop:step.  The index expressions have yorick semantics, not
-numpy semantics, that is: (A) dimension order is fastest varying to
-slowest varying, (B) index origin is 1, and (C) the stop value in a
-slice is included as part of the slice.  If you want numpy index semantics,
-you can use the call handle yo.c.var[ndxlist], and pyorick will swap the
-index order and attempt to fix the index origin and slice stop values.
+An ndxlist is not distinguishable from an arglist in yorick, but in
+python there are syntactic differences: Index ranges start:stop:step
+are allowed in an ndxlist, but not in an arglist.  A python arglist
+may be empty, but a python ndxlist may not be empty.  The yo.e
+evaluate handle passes the index list as-is to yorick, where array
+indices begin at 1, the upper limit of an index range is inclusive,
+and the index order is fastest-to-slowest varying in memory.  The yo.c
+call handle makes a crude attempt to translate ndxlist from numpy to
+yorick semantics by swapping the order of ndxlist and attempting to
+adjust the numpy 0-origin indexing and range stop semantics.  This
+almost certainly does not work in all cases, so you are better off
+using the yo.e handle for array indexing.
 
-A few potential yorick variable names cannot be accessed using the
-yo.<handle>.varname syntax (e.g.- __init__).  For these cases, all
-three handles accept a dict-like key:
-  yo.v['var']   same as   yo.v.var   (same for yo.c, yo.e handles)
-This feature is useful if the name of the yorick variable is the value
-of a python string variable as well.
+An ndxlist element may have a string value to extract a member from
+a yorick object:
+  yo.e.ary['mem']     ary.mem or get_member(ary,"mem") in yorick
+  yo.e.ary[1,'mem1',2:3,'mem2']    ary(1).mem1(2:3).mem2 in yorick
 
-The call and evaluate handle attributes return a reference to a yorick
-variable, which doesn't actually communicate with yorick until you use
-it.  That is, yo.e.var is just a reference to the yorick variable 'var'
-with eval-sematics, while yo.c.var is a reference with call-semantics.
-Variable reference objects implement methods to actually retrieve data
-with yo.e.var(args) or yo.e.var[ndxs].  Note that yorick does not distinguish
-between var(args) and var[ndxs], so they do the same thing in pyorick.
-However, in python, yo.e.var(1:2) is a syntax error, while yo.e.var[1:2]
-is not.  Similarly, python syntax does not permit keywords in index lists,
-nor keywords preceding positional arguments in argument lists.
+Not all objects can be passed through the pipes connecting python and
+yorick.  The expr, arglist, and ndxlist elements must be numpy arrays
+or array-like nested lists of elements of a common data type
+(convertable to numpy arrays with the numpy.array constructor).  Only
+numeric or string arrays are permitted.  Yorick strings are iso_8859_1
+encoded and '\0'-terminated, so any python strings containing '\0'
+characters will be silently truncated at the first '\0' when
+transmitted to yorick, and any string which cannot be iso_8859_1
+encoded will raise an exception.  In addition to string or numeric
+arrays, a slice object or the value None can be encoded, translating
+as an index range or [], respectively, in yorick.  Finally, a list or
+a string-keyed dict whose members are also encodable (including other
+such list or dict objects recursively).  In yorick, these become oxy
+objects whose members are all anonymous (for a list) or all named (for
+a dict).
 
-Yorick variable reference objects have several properties:
-  yo.e.var.info     # returns datatype and shape information about var
-  yo.e.var.value    # returns the value of var, like yo.v.var
-  yo.e.var.v        # returns the value of var, like yo.v.var
-In general, you can convert any variable handle sematics to another
-semantics, so yor.e.var.c is a call-semantics reference for var,
-yo.c.var.e is and eval-semantics references, and so on.  Info returns
-a 1D array [typeid, rank, dim1, dim2, ..., dimN] for an array type,
-where typeid is 1, 2, 3 for short, int, long integers, 8 for bytes
-(char in yorick, uint8 in numpy), 5, 6 for float, double reals, 14
-for complex, and 16 for string data.  The dimension lengths are in
-yorick order, fastest to slowest varying in memory.  For non-array
-data, info returns a single element array [typeid], -1 for a function,
--2 for a list-like anonymous object, -3 for a dict-like object, -4 for
-a slice, -5 for nil, -6 for a file handle, and -7 or -8 for
-other non-representable objects.
+yo.c.quit()    quit yorick (by invoking yorick quit function)
+yo.kill()      try yo.c.quit(), then SIGKILL if that doesn't work
+bool(yo), bool(yo.e), bool(yo.v), bool(yo.e.var), etc.
+  True if yorick process is alive, False if it has quit or been killed
 
-An value handle attribute representing a non-data yorick variable, such
-as a function or a file handle, also returns a yorick variable reference
-(after a brief exchange with yorick).  A reference returned by a value
-handle in this way is treated like a call-semantics reference.  Thus,
-yo.v.plg is essentially the same as yo.c.plg.
+yo.v['var']  or  yo.e['var']  or  yo.c['var']
+  same as yo.v.var, yo.e.var, or yo.c.var, respectively
+  -work for otherwise reserved python attribute names (e.g.- __init__)
+  -useful when yorick variable name is stored in python variable
 
-All yorick array types except pointer and struct instance are valid data.
-A yorick string maps to a python str, but only str which do not contain
-any '\0' characters are possible in yorick.  Going from python to yorick,
-a str is silently truncated at its first '\0'.  A yorick array of strings
-becomes a nested list of python str.  In general, nested lists of python
-numbers will be converted to numpy arrays and sent to yorick.  A numpy
-array of strings, in addition to a nested list of strings, can also be
-sent to yorick.  A python list (or other sequence) of arbitrary
-representable data objects maps to an anonymous oxy object in yorick.
-A python dict with str keys maps to a yorick oxy object with named
-members.
+Given yo.e.var or yo.c.var, you can switch to any other handle type,
+for example:
+var = yo.c.var
+var.v  or  var.value   same as yo.v.var, immediately returns value
+var.e(arglist)         returns yorick var function value  var(arglist)
+var = yo.e.var
+var.v  or  var.value   same as yo.v.var, immediately returns value
+var.c(arglist)         calls yorick var as subroutine  var,arglist
+
+var = yo.e.var   (or = yo.c.var)
+var.info     return [typeid,rank,shape]
+var.shape    return numpy.ndarray shape tuple, or None if not array
+  Tests for encodable objects:
+var.is_string  var.is_number
+var.is_bytes  var.is_integer  var.is_real  var.is_complex
+var.is_range  var.is_nil  var.is_list  var.is_dict
+  Tests for non-encodable objects:
+var.is_func
+var.is_obj   yorick oxy object with both anonymous and named members
+var.is_file  yorick file handle, 0 = not file, 1 = binary, 2 = text
+
+When a yorick variable has an unencodable value, yo.v.var produces the
+same python object as yo.c.var.  The call or evaluate semantic
+variable objects are simply references to the yorick variable var.  If
+that variable is changing in yorick, yo.e.var or yo.c.var always
+refers to the value of var at the time python does something using the
+object.  You may also pass yo.e.var or yo.c.var as an element of an
+arglist or an ndxlist to have yorick place var in the list, without
+transmitting its value to python and back (as would happen if you
+placed yo.v.var in an arglist or ndxlist).
+
+When a yorick function returns a non-encodable object, pyorick holds
+a use (in yorick) of that object, and returns a reference to that use
+to python.  For example:
+  f = yo.e.createb('myfile.pdb')
+returns a reference f to a use of the yorick file handle returned by
+the yorick create function.  The python object f is similar to the
+reference object yo.e.f, but in this case, there is no yorick variable
+corresponding to the object.  You can pass the python f to a yorick
+function, for example
+  yo.c.save(f, item=[1,2,3])    save [1,2,3] as item in myfile.pdb
+  f['item']                     return value of item in myfile.pdb
+When the python object f is destroyed, its destructor removes the
+(only) use of the corresponding yorick object.  In the case of yorick
+file handles, this closes the file:
+  del f
+Held-reference objects like f are evaluate-semantics variable handles.
+
+You can also hold a use of an encodable yorick object, if you do not
+want to pass its value back to python, and you do not want to create
+a yorick variable to hold its value:
+  yo.e('@expr')    do not transmit value, hold&return use of result
+    -passes additional arguments format method of first, as usual
+  yo.e.fun.hold(arglist)   fun(arglist), but hold&return use of result
+  yo.e.ary.hold[ndxlist]   fun(arglist), but hold&return use of result
+Any held-reference object has a value attribute and the various query
+attributes, like ordinary reference-by-name objects:
+  x = yo.e.random.hold(100,100,1000)  # 1e7 numbers held in yorick
+  y = x.v  # or x.value, transmits 1e7 numbers to python
+  y = numpy.zeros(x.shape)  # make python array of same shape as x
+By default, held-reference objects have evaluate-semantics.  You can
+get call semantics with x.call(arglist) as usual.  You can also hold
+the result of a function call or slice with x.hold(arglist) or
+x.hold[ndxlist].
 
 The following special objects are available for use in expressions used
 to set variable values in yorick:
@@ -115,14 +150,25 @@ The ystring0 value is also passed back to python to represent a string(0)
 value in yorick.  It is derived from str and has value '' in python.  You
 can check for it with "s is ystring0" if you need to distinguish.
 
+All pyorick generated errors use the PYorickError exception class.
+
 Finally, pyorick can turn the python command line into a yorick terminal:
   yo()          enter yorick terminal mode, special yorick commands are:
     py            from yorick terminal mode returns to python
     py, "code"    from yorick terminal mode to exec code in python
     py("expr")    from yorick terminal mode to eval expr in python
+    py, "expr=", value  sets python expr to value
+    py("expr", arg1, arg2, ...)  returns python expr(arg1,arg2,...)
+    py("expr:", ndx1, ndx2, ...) returns python expr[ndx1,ndx2,...]
+    py, "expr:", ndx1, ..., value  sets python expr[ndx1,...]=value
+By default, python expressions are evaluated in the context of __main__,
+not in the context of the pyorick module.
+Python errors in terminal mode are caught and ignored by python, but will
+raise an exception in yorick.
 """
 
 from .pyorick import *
 
 # limit names exported by "from pyorick import *"
-__all__ = ['Yorick', 'PYorickError', 'ynewaxis', 'ystring0']
+__all__ = ['Yorick', 'PYorickError', 'Key2AttrWrapper',
+           'ynewaxis', 'ystring0', 'yencodable']
