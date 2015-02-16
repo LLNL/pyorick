@@ -142,6 +142,19 @@ get call semantics with x.call(arglist) as usual.  You can also hold
 the result of a function call or slice with x.hold(arglist) or
 x.hold[ndxlist].
 
+When you try to send a non-encodable python object to yorick (as a
+variable value or a function argument, for example), pyorick will
+pickle it if possible.  It then sends the pickled object as a 1D array
+of type char, beginning with 'thisispickled_' plus the md5sum of
+'thisispickled\n'.  Conversely, if pyorick receives a 1D char array
+beginning with this prefix, it unpickles the bytes and returns the
+resulting object.  Thus, although yorick cannot interpret such
+objects, it can, for example, store them in save files, which will
+make sense when pyorick reads them back.  You can turn this behavior
+off by calling ypickling(False) or back to the default on state with
+ypickling(True).  (The pickling behavior lives in the pyorick pipeline
+codec, not in the yorick process handles.)
+
 The following special objects are available for use in expressions used
 to set variable values in yorick:
   ystring0     yorick string(0) is C NULL, different than ""
@@ -150,7 +163,14 @@ The ystring0 value is also passed back to python to represent a string(0)
 value in yorick.  It is derived from str and has value '' in python.  You
 can check for it with "s is ystring0" if you need to distinguish.
 
-All pyorick generated errors use the PYorickError exception class.
+Pyorick also provides a Key2AttrWrapper function that wraps an object
+instance so that its get/setitem methods are called when the
+get/setattr methods of the wrapped instance are invoked.  You can use
+this to mimic yorick member extract syntax in python objects which are
+references to yorick objects, struct instances, or file handles.
+
+All pyorick generated errors use the PYorickError exception class,
+although PicklingError may be raised if pickling fails.
 
 Finally, pyorick can turn the python command line into a yorick terminal:
   yo()          enter yorick terminal mode, special yorick commands are:
@@ -171,4 +191,4 @@ from .pyorick import *
 
 # limit names exported by "from pyorick import *"
 __all__ = ['Yorick', 'PYorickError', 'Key2AttrWrapper',
-           'ynewaxis', 'ystring0', 'yencodable']
+           'ynewaxis', 'ystring0', 'yencodable', 'ypickling']

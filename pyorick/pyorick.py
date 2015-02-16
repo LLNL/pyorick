@@ -19,6 +19,9 @@ if sys.version_info[0] >= 3:
   basestring = str    # need basestring for 2.x isinstance tests for string
   xrange = range      # only use xrange where list might be large
   raw_input = input
+  import pickle
+else:
+  import cPickle as pickle
 
 import numpy as np
 
@@ -127,6 +130,50 @@ class Yorick(object):
     """Execute a yorick command."""
     return self.call(command, *args, **kwargs)
 
+# expose this to allow user to catch pyorick exceptions
+class PYorickError(Exception):
+  pass
+
+# np.newaxis is None, which is [] in yorick, not -
+# ynewaxis provides a means for specifying yorick - in get/setslice
+class NewAxis(object):
+  pass
+ynewaxis = NewAxis()
+
+# yorick distinguishes string(0) from an empty string; python does not
+# provide an empty string which can be used to pass string(0) to yorick,
+# but still works like an empty string in python
+class YString0(str):
+  pass
+ystring0 = YString0()
+
+def yencodable(value):
+  """Return True if object can be encoded for transfer to yorick."""
+  return codec.encode_data(value, True)
+
+def ypickling(both=None, encode=None, decode=None):
+  """Set whether unencodable objects are pickled for transfer to yorick.
+
+  Arguments:
+  both    True or False to turn pickling on or off in both directions
+  encode  turn pickling on or off in encoding direction only
+  decode  turn pickling on or off in decoding direction only
+
+  Pickling is turned on in both directions by default.
+
+  PYorick uses protocol 2 pickling, prepends a string beginning with
+  'thisispickled_', then transmits the byte string as a 1D array of char.
+  """
+  if both is not None:
+    codec.enpickle = codec.depickle = bool(both)
+  if encode is not None:
+    codec.enpickle = bool(encode)
+  if decode is not None:
+    codec.depickle = bool(decode)
+
+########################################################################
+
+server_namespace = __main__.__dict__  # for python code invoked by yorick
 
 class YorickBare(object):
   """Avoids circular references among Yorick, YorickHandle, and YorickVar."""
@@ -182,30 +229,6 @@ class YorickBare(object):
     print("--> yorick prompt (type py to return to python):")
     self.proc.interact(YorickServer(namespace))
     print("--> python prompt:")
-
-# expose this to allow user to catch pyorick exceptions
-class PYorickError(Exception):
-  pass
-
-# np.newaxis is None, which is [] in yorick, not -
-# ynewaxis provides a means for specifying yorick - in get/setslice
-class NewAxis(object):
-  pass
-ynewaxis = NewAxis()
-
-# yorick distinguishes string(0) from an empty string; python does not
-# provide an empty string which can be used to pass string(0) to yorick,
-# but still works like an empty string in python
-class YString0(str):
-  pass
-ystring0 = YString0()
-
-def yencodable(value):
-  return codec.encode_data(value, True)
-
-########################################################################
-
-server_namespace = __main__.__dict__  # for python code invoked by yorick
 
 class Key2Attr(object):
   """Base class to convert attributes to keys, s/getattr --> s/getitem."""
@@ -853,6 +876,10 @@ id_typtab = [0, 1, 2, 4, 3, 5, 7, 6, 8, 9, 10, 12, 11, 13, 15, 14]
 id_typtab = dict([[typesk[id_typtab[i]], id_typtab[i]] for i in range(16)])
 del typesz, typesk
 
+# prefix is 'thisispickled_'+md5sum('thisispickled\n')
+ypickling_prefix = bytearray(b'thisispickled_8ad5f009982d6a1bcb5d3de476751a79')
+ypickling_nprefix = len(ypickling_prefix)
+
 class codec(object):  # not really a class, just a convenient container
   """Functions and tables to build, encode, and decode messages."""
   # This collection of methods makes protocol flexible and extensible.
@@ -868,6 +895,8 @@ class codec(object):  # not really a class, just a convenient container
 
   # dict of top level clauses by key=message id
   idtable = {}  # idtable[msgid] --> top level message handler for msgid
+
+  enpickle = depickle = True  # pickling is on by default
 
   @staticmethod
   def reader(msg):
@@ -899,10 +928,13 @@ class codec(object):  # not really a class, just a convenient container
   @narray.decoder()
   def narray(msg):
     pos = msg.pos
+    ischar = (msg.packets[pos-1][0] in [0,8])
     rank = msg.packets[pos-1][1]
     if rank:
       msg.pos = pos = pos+1
     msg.pos += 1
+    if ischar and rank==1 and codec.depickle:
+      return codec.pickleloads(msg.packets[pos])
     return msg.packets[pos]
 
   sarray = Clause(idtable, ID_STRING)
@@ -1374,12 +1406,16 @@ class codec(object):  # not really a class, just a convenient container
         return codec.encode_sarray(shape, value.tolist())
       if k not in 'biufc':
         if dryrun: return False
+        if codec.enpickle:
+          return codec.pickledumps(value)
         raise PYorickError("cannot encode unsupported array item type")
       if k == 'b':
         k = 'u'
       k += str(value.dtype.itemsize)
       if k not in id_typtab:
         if dryrun: return False
+        if codec.enpickle:
+          return codec.pickledumps(value)
         raise PYorickError("cannot encode unsupported array numeric dtype")
       if dryrun: return True
       msgid = id_typtab[k]
@@ -1406,6 +1442,8 @@ class codec(object):  # not really a class, just a convenient container
     elif isinstance(value, Mapping):
       if not all(isinstance(key, basestring) for key in value):
         if dryrun: return False
+        if codec.enpickle:
+          return codec.pickledumps(value)
         raise PYorickError("cannot encode dict with non-string key")
       if dryrun:
         for key in value:
@@ -1420,6 +1458,8 @@ class codec(object):  # not really a class, just a convenient container
 
     else:
       if dryrun: return False
+      if codec.enpickle:
+        return codec.pickledumps(value)
       raise PYorickError("cannot encode unsupported data object")
 
   @staticmethod
@@ -1444,6 +1484,18 @@ class codec(object):  # not really a class, just a convenient container
             return shape, None
         return shape + n, typ
     return shape, None
+
+  @staticmethod
+  def pickledumps(obj):
+    v = np.frombuffer(ypickling_prefix + bytearray(pickle.dumps(obj, 2)),
+                      dtype=np.uint8)
+    return (8, (v.shape, v), {})
+
+  @staticmethod
+  def pickleloads(chars):
+    if ypickling_prefix == bytearray(chars[0:ypickling_nprefix]):
+      return pickle.loads(chars[ypickling_nprefix:].tostring())
+    return chars
 
 def nplongs(*args):
   return np.array(args, dtype=c_long)
