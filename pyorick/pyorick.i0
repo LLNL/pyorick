@@ -17,6 +17,12 @@
  * You may also set _pyorick_rfd and _pyorick_wfd by hand before invoking
  * this script for debugging purposes.
  */
+local pyorick_dir;
+/* DOCUMENT pyorick_dir
+ *   Directory containing pyorick.i0, the pyorick installation directory.
+ */
+pyorick_dir = current_include();
+pyorick_dir = strpart(pyorick_dir, strgrep(".*/", pyorick_dir));
 
 func pyorick(mode)
 /* DOCUMENT pyorick
@@ -49,25 +55,31 @@ func pyorick(mode)
   extern _pyorick_mode, after_error;
   if (is_void(mode)) {
     local __, ___;
+    _pyorick_hold = 0;  /* hold result, set in wait/action/unparse */
     if (_pyorick_wait() && _pyorick_sending && !is_void(___)) {
       if (pydebug) { write, "Y>pyorick request is:"; print, ___; }
       _pydebug = pydebug;
       include, grow("___=[];" , ___), 1;
       swap, pydebug, _pydebug;
       if (pydebug) { write, "Y>pyorick response is:"; info, ___; }
-      _pyorick_put, _pyorick_encode(___);
+      msg = _pyorick_encode(___, 1);
+      _pyorick_put, msg;
       _pyorick_sending = 0;
       swap, pydebug, _pydebug;
+      if (!_pyorick_hold && is_obj(msg) && allof(msg(hdr) == [_ID_EOL,2]))
+        save, _pyorick_refs, 3, ___;  /* prepare for auto-reference */
     }
   } else if (mode < 0) {
     _pyorick_mode = 1n;
     set_idler, , 0;
     after_error = [];
+    if (pydebug) write, "Y>yorick has entered terminal mode";
   } else {
     _pyorick_mode = (mode != 0);
     if (_pyorick_mode) set_idler, , 4;
     else set_idler, _pyorick_idler, 4;
     after_error = _pyorick_err_handler;
+    if (pydebug) write, format=" Y>yorick mode = %d\n", _pyorick_mode;
   }
 }
 
@@ -78,21 +90,24 @@ local pydebug;
  *   debugging messages.
  */
 
-/* yorick API for sending active messages to python:
+func py(arglist)
+/* DOCUMENT py                    exit pyorick terminal mode
+ *       or py, "code", arglist   execute python code
+ *       or py("expr", arglist)   return value of python expression
+ *            with arglist, invoke "code" or "expr" as python function
+ *       or py("vexpr:")          reference python variable "vexpr" in arglist
+ *       or py("vexpr:", indexlist)         return python "vexpr" slice
+ *       or py, "vexpr=", value             set python "vexpr" to value
+ *       or py, "vexpr:", indexlist, value  set python "vexpr" slice to value
+ *            indexlist order and meaning as in python
  *
- * py, "python code"        parse and execute python code
- * py("python expression")  parse and execute python expression
- * py, "subroutine", arg1, arg2, ...   execute subroutine with arguments
- * py("function", arg1, arg2, ...)     execute function with arguments
- *                          argN may be keyword argument
- * py("variable:")          reference to variable for use as argument
- * py, "variable:", value)             set variable to value
- * py("array:", index1, index2, ...)   get array slice
- * py, "array:", index1, index2, ..., value      set array slice
- *   note: index order and meaning as interpreted by python
+ *   Yorick API for sending active messages to python.  The postfix ":" and
+ *   postfix "=" are interchangable in the last four forms.
+ *
+ * SEE ALSO: pyorick
  */
-func py(command, ..)
 {
+  command = arglist(1);
   if (is_void(command)) {  /* exit yorick terminal mode */
     _pyorick_send, [_ID_EOL, 0];  /* tell python to exit terminal mode */
     /* write, format="%s", "ExitTerminalMode> "; */
@@ -104,18 +119,68 @@ func py(command, ..)
     after_error = _pyorick_err_handler;
     if (pydebug) write, "Y>py exiting yorick terminal mode";
     dbexit, 0;  /* return, making sure we are out of dbug> mode */
-  } else if (!more_args()) {
-    id = am_subroutine()? _ID_EXEC : _ID_EVAL;
+
+  } else {
+    nargs = arglist(0) - 1;
+    keys = arglist(-);
     command = strchar(command)(1:-1);
+    isvar = anyof(command(0) == [':','=']);
+    if (isvar) command = command(1:-1);
     list = where(!command);
     if (numberof(list)) command(list) = '\n';
-    _pyorick_send, [id, numberof(command)];
-    _pyorick_send, command;
-    return _pyorick_decode(_pyorick_get());
-  } else {
-    error, "not yet implemented, use py,command or py(expression)";
+    idx = hasval = 0;
+    if (!isvar) {
+      if (nargs || numberof(keys)) {
+        id = am_subroutine()? _ID_SUBCALL : _ID_FUNCALL;
+      } else {
+        id = am_subroutine()? _ID_EXEC : _ID_EVAL;
+        idx = 1;
+      }
+    } else {
+      if (numberof(keys))
+        error, "python slice cannot accept keyword as index";
+      if (am_subroutine()) {
+        if (!nargs)
+          error, "set python variable requires a value";
+        id = (nargs>1)? _ID_SETSLICE : _ID_SETVAR;
+        nargs -= 1;  /* final argument is value, not list */
+        hasval = 1;
+      } else {
+        id = nargs? _ID_GETSLICE : _ID_GETVAR;
+      }
+    }
+    if (pydebug)
+      write, format=" Y>py id=%ld, nargs=%ld, hasval=%ld\n", id, nargs, hasval;
+    hdr = [id, numberof(command)];
+    if (idx) msg = save(_pyorick_id=id, hdr, value=command);
+    else msg = save(_pyorick_id=id, hdr, name=command);
+    if (id == _ID_GETVAR) return msg;  /* reference to python variable */
+    if (nargs>0 || numberof(keys)) {
+      args = save();
+      for (i=1 ; i<=nargs ; ++i)
+        save, args, string(0), _pyorick_encode(arglist(1+i), 2);
+      for (i=1 ; i<=numberof(keys) ; ++i) {
+        name = strchar(keys(i))(1:-1);
+        key = save(_pyorick_id=_ID_SETVAR, hdr=[_ID_SETVAR,numberof(name)],
+                   name, value=_pyorick_encode(arglist(keys(i)), 2));
+        save, args, string(0), key;
+      }
+      save, msg, args;
+    }
+    if (hasval) save, msg, value=_pyorick_encode(arglist(2+nargs), 2);
+
+    if (pydebug) write, "Y>py sending active request";
+    _pyorick_put, msg;
+    v = _pyorick_decode(_pyorick_get());
+    if (pydebug) write, "Y>py decoded reply to active request";
+    if (is_obj(v, _pyorick_id, 1))
+      return v;  /* ordinary passive value */
+    if (allof(v(hdr) == [_ID_EOL,1]))
+      error, "python reported error";
+    error, "python reply undecodable";
   }
 }
+wrap_args, py;
 
 /* ------------------------------------------------------------------------ */
 /* remainder is not part of user interface, supports pyorick.py */
@@ -141,6 +206,13 @@ _ID_SUBCALL = 37;
 _ID_GETSLICE = 38;
 _ID_SETSLICE = 39;
 _ID_GETSHAPE = 40;
+
+/* _ID_EOL flag values:
+ * 0   end of list
+ * 1   error sent by _pyorick_puterr
+ * 2   after GETVAR request to indicate unencodable
+ * -1  yorick has quit
+ */
 
 /* garbled messages are fatal, shut down the pipes and exit idler loop */
 func _pyorick_panic(msg)
@@ -198,8 +270,6 @@ func _pyorick_send(x) { return fd_write(_pyorick_wfd, x); }
  * _pyorick_decode
  *    Decode passive messages from the uninterpreted form returned by
  *    _pyorick_get.  Most of the work is for string array and lst/dct objects.
- * _pyorick_setslice
- *    The SETSLICE active message needs this special helper function.
  * _pyorick_encode
  *    Produce the passive message representing the yorick value which
  *    is the response to the python request.  The format is the same as
@@ -248,7 +318,7 @@ func _pyorick_wait(void)
       _pyorick_puterr;
       _pyorick_sending = 0;
     }
-    msg = _pyorick_get();  /* atomic read */
+    msg = _pyorick_get(1);  /* atomic read */
     if (pydebug) write, "Y>_pyorick_wait: got message "+print(msg(hdr))(1);
     if (!is_void(_pyorick_rfd)) {
       /* perhaps should call _pyorick_puterr if _pyorick_errmsg is set? */
@@ -261,15 +331,53 @@ func _pyorick_wait(void)
   return 0;
 }
 
+func _pyorick_refs(n, value)
+{
+  if (!n) {
+    save, _pyorick_refs, 3, value;
+    extern ___;
+    ___ = _pyorick_refs(1,1);
+  } else if (am_subroutine()) {
+    if (n>3 && n<=_pyorick_refs(*)) { /* add n to free list */
+      save, _pyorick_refs, noop(n), _pyorick_refs(2);
+      save, _pyorick_refs, 2, n;
+    }
+    save, _pyorick_refs, 3, [];
+  } else if (n == 1) {
+    n = _pyorick_refs(*);
+    if (_pyorick_refs(2) > n) {
+      save, _pyorick_refs, 2, n+1;  /* should be true without this */
+      for (i=1 ; i<n ;) /* expand and initialize free list */
+        save, _pyorick_refs, string(0), n+(++i);
+    }
+    n = _pyorick_refs(2);
+    save, _pyorick_refs, 2, _pyorick_refs(noop(n)); /* set next free */
+    save, _pyorick_refs, noop(n), _pyorick_refs(3);
+    return n;
+  }
+}
+_pyorick_refs = save(,_pyorick_refs, ,4, ,[]);
+/* _pyorick_refs(#)   is held use of reference #, for #>3
+ *   _pyorick_refs(1)  is above function
+ *   _pyorick_refs(2)  is next free reference #
+ *   _pyorick_refs(3)  is temporary value of previous result (if unencodable)
+ * _pyorick_refs(1,1)  moves 3 to next free reference #, returning that #
+ * _pyorick_refs,1,#   frees reference #, dropping use
+ * _pyorick_refs, 1,, value
+ *    sets next free reference # to value, and sets ___ to that #
+ */
+
 /* slurp complete message with no excess processing -- must be atomic op
  * panic (close connection) if dimensions or lengths make no sense,
  *   or if message (or quoted message) not recognized
  */
-func _pyorick_get(void)
+func _pyorick_get(ctx)
 {
   if (pydebug) write, "Y>_pyorick_get: blocking...";
   hdr = _pyorick_recv([0, 0]);
   if (pydebug) write, "Y>_pyorick_get: got message "+print(hdr)(1);
+  ctx = ctx && allof(hdr == [_ID_GETVAR,0]);
+  if (!ctx) _pyorick_refs, 1, 3;  /* discard previous result, if any */ 
   id = hdr(1);
   msg = save(_pyorick_id=id, hdr);
   if (id>=0 && id<_ID_STRING) {
@@ -314,7 +422,7 @@ func _pyorick_get(void)
   } else if (anyof(id == [_ID_EVAL, _ID_EXEC])) {
     save, msg, value = _pyorick_getname(hdr(2));
   } else if (anyof(id == [_ID_GETVAR, _ID_SETVAR, _ID_GETSHAPE])) {
-    save, msg, name = _pyorick_getname(hdr(2));
+    save, msg, name = (ctx? [] : _pyorick_getname(hdr(2)));
     if (id == _ID_SETVAR) save, msg, value = _pyorick_get();
   } else if (id>=_ID_FUNCALL && id<=_ID_SETSLICE) {
     save, msg, name = _pyorick_getname(hdr(2));
@@ -322,7 +430,7 @@ func _pyorick_get(void)
     if (id == _ID_SETSLICE) save, msg, value = _pyorick_get();
 
   } else {
-      _pyorick_panic, "unknown message id";
+    _pyorick_panic, "unknown message id";
   }
   return msg;
 }
@@ -369,6 +477,7 @@ func _pyorick_unparse(msg, raw)
 {
   local value, args;
   id = msg(_pyorick_id);
+  pfx = "___=";
   if (id < _ID_EVAL) {
     if (!raw) error, "expecting active message";
     if (id == _ID_NIL) {
@@ -381,38 +490,84 @@ func _pyorick_unparse(msg, raw)
   } else if (id==_ID_EVAL || id==_ID_EXEC) {
     eq_nocopy, value, msg(value);
     isf = (id == _ID_EVAL);
+    if (raw && !isf) error, "illegal value or argument";
     list = where((value == '\n') | (value == '\r'));
     if (numberof(list)) value(list) = '\0';
+    if (!raw) {
+      extern _pyorick_hold;
+      _pyorick_hold = (value(1)=='\05' && numberof(value)>1);
+      if (_pyorick_hold) {
+        value = value(2:);
+        pfx = "_pyorick_refs,1,,";
+      }
+    }
     txt = strchar(value);
-    if (isf) txt(1) = raw? strpart(txt,2:) : "___=" + txt(1);
-    else if (raw) error, "illegal value or argument";
+    if (isf && !raw) txt(1) = pfx + txt(1);
 
   } else if (id == _ID_GETVAR) {
-    txt = (raw? "" : "___=") + strchar(msg(name));
+    name = msg(name);
+    if (raw || numberof(name)) {
+      name = _pyorick_name(name, raw, _pyorick_hold, pfx);
+      txt = (raw? "" : pfx) + name;
+    } else {
+      txt = "___=_pyorick_refs(1,1)";
+    }
   } else if (id == _ID_SETVAR) {
     if (raw == 3) error, "illegal keyword argument in index list";
-    txt = strchar(msg(name)) + "=" + _pyorick_unparse(msg(value), 1);
+    txt = _pyorick_name(msg(name)) + "=" + _pyorick_unparse(msg(value), 1);
   } else if (id == _ID_GETSHAPE) {
-    txt = "___=" + "_pyorick_shape(" + strchar(msg(name)) + ")";
+    txt = pfx + "_pyorick_shape(" + _pyorick_name(msg(name)) + ")";
 
   } else {
     if (raw && id!=_ID_FUNCALL) error, "illegal argument or index";
     args = msg(args);  /* args always an oxy object, no copy here */
     n = args(*);
-    if (id==_ID_FUNCALL || id==_ID_GETSLICE)
-      txt = (raw? "" : "___=") + strchar(msg(name)) + "(";
-    else if (id == _ID_SUBCALL)
-      txt = strchar(msg(name)) + (n? "," : "");
-    else if (id == _ID_SETSLICE)
-      txt = "_pyorick_setslice," + strchar(msg(name)) + "," +
-        _pyorick_unparse(msg(value), 1) + ",";
-    for (i=1 ; i<=n ; ++i) {
-      txt += _pyorick_unparse(args(noop(i)), 2+(id>=_ID_GETSLICE));
-      if (i < n) txt += ",";
+    if (id==_ID_FUNCALL || id>=_ID_GETSLICE) {
+      name = _pyorick_name(msg(name), raw, _pyorick_hold, pfx);
+      txt = (raw? "" : pfx) + name + "(";
+      off = raw? 0 : strlen(pfx);
+    } else if (id == _ID_SUBCALL) {
+      txt = _pyorick_name(msg(name)) + (n? "," : "");
     }
-    if (id==_ID_FUNCALL || id==_ID_GETSLICE) txt += ")";
+    for (i=1 ; i<=n ; ++i) {
+      a = args(noop(i));  /* args is a msg object, no copy here */
+      if (id>=_ID_GETSLICE && a(_pyorick_id)==_ID_STRING) {
+        /* immediate string index to slice operation means member extract
+         * name(        -->  get_member(name,"msg")(
+         * name(index,  -->  get_member(name(index),"msg")(
+         */
+        s = ",\"" + _pyorick_decode(a) + "\")(";  /* assume no " in string */
+        len = strlen(txt);
+        if (strpart(txt, len:len) == ",") s = ")" + s;
+        txt = streplace(txt, [off,off,len-1,len], ["get_member(", s]);
+      } else {
+        txt += _pyorick_unparse(a, 2+(id>=_ID_GETSLICE));
+        if (i < n) txt += ",";
+      }
+    }
+    if (id==_ID_FUNCALL) {
+      txt += ")";
+    } else if (id >= _ID_GETSLICE) {
+      if (strpart(txt, -1:0) == ")(") txt = strpart(txt, 1:-1);
+      else txt += ")";
+      if (id == _ID_SETSLICE)
+        txt += "=" + _pyorick_unparse(msg(value), 1);
+    }
   }
   return txt;
+}
+
+func _pyorick_name(name, raw, &hold, &pfx)
+{
+  hold = (name(1)=='\05' && numberof(name)>1 && !raw);
+  if (hold) {
+    pfx = "_pyorick_refs,1,,";
+    name = name(2:);
+  }
+  ref = (name(1)<='9' && name(1)>='1');
+  name = strchar(name);
+  if (ref) name = "_pyorick_refs(" + name + ")";
+  return name;
 }
 
 func _pyorick_decode(msg)
@@ -459,13 +614,14 @@ func _pyorick_decode(msg)
 
 func _pyorick_shape(a)
 {
-  id = where(_pyorick_type(*,) == typeof(a));
+  if (structof(a) == string) id = 17
+  else id = where(_pyorick_type(*,) == typeof(a));
   if (numberof(id)) {
     if (id(1) == 1) id = 9;
     return grow(id-1, dimsof(a));
   } else if (is_func(a)) {
     return [-1];
-  } else if (is_obj(a)) {
+  } else if (is_obj(a)==3 && is_void(a._pyorick_id)) {
     names = a(*,);
     return [(noneof(names)? -2 : (allof(names)? -3 : -8))];
   } else if (is_range(a)) {
@@ -474,48 +630,16 @@ func _pyorick_shape(a)
     return [-5];
   } else if (is_stream(a)) {
     return [-6];
-  } else {
+  } else if (typeof(g) == "text_stream") {
     return [-7];
+  } else {
+    return [-9];
   }
 }
 
-func _pyorick_setslice(a, value, ..)
+func _pyorick_encode(value, env)
 {
-  n = more_args();
-  if (n == 0) 
-    a() = value;  /* probably an error */
-  else if (n == 1)
-    a(next_arg()) = value;
-  else if (n == 2)
-    a(next_arg(), next_arg()) = value;
-  else if (n == 3)
-    a(next_arg(), next_arg(), next_arg()) = value;
-  else if (n == 4)
-    a(next_arg(), next_arg(), next_arg(), next_arg()) = value;
-  else if (n == 5)
-    a(next_arg(), next_arg(), next_arg(), next_arg(), next_arg()) = value;
-  else if (n == 6)
-    a(next_arg(), next_arg(), next_arg(), next_arg(), next_arg(),
-      next_arg()) = value;
-  else if (n == 7)
-    a(next_arg(), next_arg(), next_arg(), next_arg(), next_arg(),
-      next_arg(), next_arg()) = value;
-  else if (n == 8)
-    a(next_arg(), next_arg(), next_arg(), next_arg(), next_arg(),
-      next_arg(), next_arg(), next_arg()) = value;
-  else if (n == 9)
-    a(next_arg(), next_arg(), next_arg(), next_arg(), next_arg(),
-      next_arg(), next_arg(), next_arg(), next_arg()) = value;
-  else if (n == 10)
-    a(next_arg(), next_arg(), next_arg(), next_arg(), next_arg(),
-      next_arg(), next_arg(), next_arg(), next_arg(), next_arg()) = value;
-  else
-    error, "cannot accept more than 10 dimensions";
-}
-
-func _pyorick_encode(value)
-{
-  if (!is_obj(value) || is_void(value._pyorick_id)) {
+  if (is_obj(value, _pyorick_id, 1)) {
     /* ordinary passive value */
     if (is_array(value)) {
       if (structof(value) == string) {
@@ -530,15 +654,19 @@ func _pyorick_encode(value)
         }
       } else {
         id = where(_pyorick_type(*,) == typeof(value));
-        if (!numberof(id))
-          error, "unsupported datatype " + typeof(value);
-        id = id(1) - 1;
-        if (!id) id = 8;
-        dims = dimsof(value);
+        if (numberof(id)) {
+          id = id(1) - 1;
+          if (!id) id = 8;
+          dims = dimsof(value);
+        }
       }
-      msg = save(_pyorick_id=id, hdr=[id,dims(1)]);
-      if (id != 16) save, msg, value;
-      else save, msg, lens, value=(is_void(value)?[]:strchar(value));
+      if (numberof(id)) {
+        msg = save(_pyorick_id=id, hdr=[id,dims(1)]);
+        if (id != 16) save, msg, value;
+        else save, msg, lens, value=(is_void(value)?[]:strchar(value));
+      } else {
+        msg = "unencodable array datatype " + typeof(value);
+      }
 
     } else if (is_range(value)) {
       id = _ID_SLICE;
@@ -548,36 +676,43 @@ func _pyorick_encode(value)
     } else if (is_void(value)) {
       msg = save(_pyorick_id=_ID_NIL, hdr=[_ID_NIL,0], value=[]);
 
-    } else if (is_obj(value)) {
+    } else if (is_obj(value) == 3) {
       names = value(*,);
       named = allof(names);
-      if (!named && anyof(names))
-        error, "oxy object members must be all named or all anonymous";
-      id = (named? _ID_DCT : _ID_LST);
-      v = save();
-      msg = save(_pyorick_id=id, hdr=[id, 0], value=v);
-      n = numberof(names);
-      if (named) {
+      if (named || noneof(names)) {
+        id = (named? _ID_DCT : _ID_LST);
+        v = save();
+        msg = save(_pyorick_id=id, hdr=[id, 0], value=v);
+        n = numberof(names);
         for (i=1 ; i<=n ; ++i) {
-          name = strchar(names(i));
-          m = save(_pyorick_id=_ID_SETVAR, hdr=[_ID_SETVAR,numberof(name)],
-                   name, value=_pyorick_encode(value(noop(i))));
+          m = _pyorick_encode(value(noop(i)), 0);
+          if (!is_obj(m))
+            return m;
+          if (named) {
+            name = strchar(names(i));
+            m = save(_pyorick_id=_ID_SETVAR, hdr=[_ID_SETVAR,numberof(name)],
+                     name, value=m);
+          }
           save, v, string(0), m;
         }
       } else {
-        for (i=1 ; i<=n ; ++i)
-          save, v, string(0), _pyorick_encode(value(noop(i)));
+        msg = "oxy object members neither all named nor all anonymous";
       }
 
     } else {  /* unencodable value, indicate variable reference */
-      msg = save(_pyorick_id=_ID_EOL, hdr=[_ID_EOL,2], value=[]);
+      msg = "unencodable value";
     }
+    if (env==1 && !is_obj(msg))
+      msg = save(_pyorick_id=_ID_EOL, hdr=[_ID_EOL,2], value=[]);
 
   } else {
     /* special or active value */
-    error, "active messages to python currently unsupported";
+    msg = "unexpected active message to python";
   }
 
+  if (env && !is_obj(msg)) {
+    error, msg;
+  }
   return msg;
 }
 

@@ -16,3 +16,8 @@ Features:
 Most of the data is exchanged via binary pipes between the two
 interpreters.  Yorick runs in a request-reply mode.  Python prints
 anything yorick sends to stdout or stderr except prompts.
+
+See `DESCRIPTION.rst <https://github.com/dhmunro/pyorick/blob/master/DESCRIPTION.rst>`_
+for a complete description of the interface.  You can clone or fork
+https://github.com/dhmunro/pyorick to contribute to pyorick.
+
