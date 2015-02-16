@@ -199,6 +199,19 @@ get call semantics or hold-reference sematics like this::
     ref1.call(args)  # call ref1 as subroutine, discard result
     ref1.hold(args)  # call ref1 as function, return reference to result
 
+Going in the other direction, when you try to send a non-encodable
+python object to yorick (as a variable value or a function argument,
+for example), pyorick will pickle it if possible.  It then sends the
+pickled object as a 1D array of type char, beginning with
+``'thisispickled_'`` plus the md5sum of ``'thisispickled\n'``.
+Conversely, if pyorick receives a 1D char array beginning with this
+prefix, it unpickles the bytes and returns the resulting object.
+Thus, although yorick cannot interpret such objects, it can, for
+example, store them in save files, which will make sense when pyorick
+reads them back.  You can turn this behavior off by calling
+``ypickling(False)`` or back to the default on state with
+``ypickling(True)``.
+
 Interface to python from yorick
 -------------------------------
 
@@ -246,7 +259,7 @@ Finally, some minor features or pyorick are worth mentioning:
    alive.
 
 2. The function ``yencodable(value)`` returns True if and only if the
-   python value can be sent to yorick.
+   python value can be sent to yorick (without pickling).
 
 3. For any of the top-level object or handle object function calls, you
    may supply additional arguments, which will be interpreted as format
@@ -270,7 +283,15 @@ Finally, some minor features or pyorick are worth mentioning:
    as : in the context of an index list.
 
 5. All pyorick generated errors use the ``PYorickError`` class.  There
-   is currently no way to catch yorick errors in python, although the
-   yorick error message will be printed.  In terminal emulator mode,
-   pyorick catches all python errors, ignoring them in python, but
-   returning error indications to yorick as appropriate.
+   is currently no way to handle yorick errors (and continue a yorick
+   program) in python, although the yorick error message will be
+   printed.  Trying to send an unpicklable object to yorick will raise
+   ``PicklingError``, not ``PYorickError``.  In terminal emulator
+   mode, pyorick catches all python errors, ignoring them in python,
+   but returning error indications to yorick as appropriate.
+
+6. The ``Key2AttrWrapper`` function wraps a python object instance, so
+   that its get/setitem methods are called when the get/setattr
+   methods of the wrapped instance are invoked.  You can use this to
+   mimic yorick member extract syntax in python objects which are
+   references to yorick objects, struct instances, or file handles.
