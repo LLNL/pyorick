@@ -13,6 +13,8 @@ import __main__
 class ExampleClass(object):
     def __init__(self, thing):
         self.thing = thing
+    def __eq__(self, other):
+        return self.thing == other.thing
 
 def example_func(x):
     return x
@@ -104,10 +106,16 @@ class TestCodec(unittest.TestCase):
         for i in range(len(self.bad)):
             s = self.bad[i]
             self.assertFalse(yencodable(s), 'yencodable fails item '+str(i))
+            ypickling(False)
             with self.assertRaises(PYorickError) as cm:
                 msg = Message(None, s)
             self.assertIsInstance(cm.exception, PYorickError,
                                   'codec failed on item '+str(i))
+            ypickling(encode=True, decode=True)
+            print('doing {}'.format(i))
+            msg = Message(None, s)
+            v = msg.decode()
+            self.assertEqual(s, v, 'codec failed on item '+str(i))
 
     def test_active(self):
         """Check codec for active messages."""
