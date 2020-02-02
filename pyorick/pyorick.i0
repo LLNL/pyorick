@@ -377,7 +377,7 @@ func _pyorick_get(ctx)
   hdr = _pyorick_recv([0, 0]);
   if (pydebug) write, "Y>_pyorick_get: got message "+print(hdr)(1);
   ctx = ctx && allof(hdr == [_ID_GETVAR,0]);
-  if (!ctx) _pyorick_refs, 1, 3;  /* discard previous result, if any */ 
+  if (!ctx) _pyorick_refs, 1, 3;  /* discard previous result, if any */
   id = hdr(1);
   msg = save(_pyorick_id=id, hdr);
   if (id>=0 && id<_ID_STRING) {
@@ -630,7 +630,7 @@ func _pyorick_shape(a)
     return [-5];
   } else if (is_stream(a)) {
     return [-6];
-  } else if (typeof(g) == "text_stream") {
+  } else if (typeof(a) == "text_stream") {
     return [-7];
   } else {
     return [-9];
