@@ -201,7 +201,8 @@ class YorickBare(object):
       hold = False
     reply = Message()
     self.proc.reqrep(Message(msgid, *args, **kwargs), reply)
-    while reply.packets and reply.packets[0][0] >= ID_EVAL:
+    while (reply.packets and reply.packets[0][0] >= ID_EVAL and
+           self.proc.pid is not None):
       if self.proc._debug:
         print("P>_reqrep: begin processing request (non-passive reply)")
       reply = reply.getreply(self.proc._debug, self._namespace)
@@ -214,6 +215,8 @@ class YorickBare(object):
       self.proc.recvmsg(reply)
     if self.proc._debug:
       print("P>_reqrep: got passive reply to original request")
+    if (self.proc.pid is None):
+      return None;
     reply = reply.decode()
     if not isinstance(reply, tuple):
       if not hold:
@@ -1672,13 +1675,13 @@ class PipeProcess(Process):
             break
           prompt = self.echo_pty()
           if prompt == 'PYORICK-QUIT> ':
-            return prompt
+            return  # yorick has quit, and process killed by echo_pty
         self.recv(packet)
     except:
       self.kill()
       raise PYorickError("failed to receive complete message, yorick killed")
     if prompt == 'PYORICK-QUIT> ':
-      return  # yorick has quit
+      return  # yorick has quit, and process killed by echo_pty
     if self._debug:
       print("P>reqrep: reply="+str(reply.packets[0]))
     if reply.packets[0][0]==ID_EOL and reply.packets[0][1]==-1:
