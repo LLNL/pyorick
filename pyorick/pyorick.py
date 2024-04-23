@@ -26,7 +26,11 @@ else:
 import numpy as np
 
 from numbers import Number
-from collections.abc import Sequence, Mapping
+try:                                            # Python >= 3.3
+    import collections.abc as collections_abc
+except ImportError:                             # Python <= 3.2 including Python 2
+    import collections as collections_abc
+from collections_abc import Sequence, Mapping
 from ctypes import (c_byte, c_ubyte, c_short, c_ushort, c_int, c_uint,
                     c_long, c_ulong, c_longlong, c_ulonglong,
                     c_float, c_double, c_longdouble, sizeof)
