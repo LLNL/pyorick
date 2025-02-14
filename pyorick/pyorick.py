@@ -822,7 +822,7 @@ class Message(object):
 id_types = [c_byte, c_short, c_int, c_long, c_longlong,
             c_float, c_double, c_longdouble,
             c_ubyte, c_ushort, c_uint, c_ulong, c_ulonglong,
-            np.csingle, np.complex_, None]  # no portable complex long double
+            np.csingle, np.cdouble, None]  # no portable complex long double
 
 # other passive messages (reply prohibited):
 ID_STRING, ID_SLICE, ID_NIL, ID_LST, ID_DCT, ID_EOL =\
