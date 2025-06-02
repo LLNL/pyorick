@@ -1,7 +1,7 @@
 Run Yorick from Python
 ======================
 
-The pyorick package starts `yorick <http://yorick.github.com>`_ as a
+The pyorick package starts `yorick <http://github.com/LLNL/yorick>`_ as a
 subprocess and provides an interface between python and yorick
 interpreted code.
 
@@ -17,7 +17,7 @@ Most of the data is exchanged via binary pipes between the two
 interpreters.  Yorick runs in a request-reply mode.  Python prints
 anything yorick sends to stdout or stderr except prompts.
 
-See `DESCRIPTION.rst <https://github.com/dhmunro/pyorick/blob/master/DESCRIPTION.rst>`_
+See `DESCRIPTION.rst <https://github.com/LLNL/pyorick/blob/master/DESCRIPTION.rst>`_
 for a complete description of the interface.  You can clone or fork
 https://github.com/dhmunro/pyorick to contribute to pyorick.
 
